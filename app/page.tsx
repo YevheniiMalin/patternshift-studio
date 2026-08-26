@@ -4,6 +4,9 @@ import { ChangeEvent, useEffect, useMemo, useRef, useState } from "react";
 import {
   ArrowRight,
   Check,
+  CheckCircle2,
+  CircleHelp,
+  ClipboardCheck,
   Download,
   FileUp,
   Info,
@@ -11,6 +14,7 @@ import {
   Layers3,
   LoaderCircle,
   Maximize2,
+  PlayCircle,
   Scissors,
   ShieldCheck,
   Sparkles,
@@ -19,6 +23,13 @@ import {
 
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import {
@@ -46,6 +57,18 @@ type ConfidenceKey = "uniformScale" | "manualAnchors" | "proportionalDraft";
 
 const SIZES: Size[] = ["XXS", "XS", "S", "M", "L", "XL", "XXL"];
 const publicBasePath = process.env.NEXT_PUBLIC_BASE_PATH ?? "";
+const DEMO_PATTERN_SVG = `<svg xmlns="http://www.w3.org/2000/svg" width="60cm" height="80cm" viewBox="0 0 600 800">
+  <rect width="600" height="800" fill="#fffdf9"/>
+  <g fill="none" stroke="#342b38" stroke-width="4" stroke-linejoin="round">
+    <path d="M106 100 L184 58 L248 114 L236 234 Q260 386 292 688 L76 688 Q112 430 108 236 Z"/>
+    <path d="M354 114 L418 58 L496 100 L494 236 Q490 430 524 688 L308 688 Q340 386 364 234 Z"/>
+    <path d="M92 720 H292 M308 720 H508" stroke-dasharray="12 9"/>
+  </g>
+  <g stroke="#8b6b94" stroke-width="2" stroke-dasharray="8 7">
+    <path d="M182 116 V640"/><path d="M418 116 V640"/>
+  </g>
+  <g fill="#8b6b94"><path d="M176 130 l6-14 6 14z"/><path d="M412 130 l6-14 6 14z"/></g>
+</svg>`;
 
 const SIZE_CHARTS: Record<Gender, Record<Size, { chest: number; waist: number; hips: number }>> = {
   women: {
@@ -182,9 +205,15 @@ export default function Home() {
   const [sourceHeight, setSourceHeight] = useState(80);
   const [showOriginal, setShowOriginal] = useState(true);
   const [preserveSeam, setPreserveSeam] = useState(true);
+  const [guideOpen, setGuideOpen] = useState(false);
+  const [profileConfirmed, setProfileConfirmed] = useState(false);
+  const [exported, setExported] = useState(false);
   const [exporting, setExporting] = useState(false);
   const [message, setMessage] = useState("");
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const uploadSectionRef = useRef<HTMLElement>(null);
+  const settingsSectionRef = useRef<HTMLElement>(null);
+  const previewSectionRef = useRef<HTMLElement>(null);
   const t = translations[language];
   const numberFormatter = useMemo(() => new Intl.NumberFormat(localeByLanguage[language], { maximumFractionDigits: 1 }), [language]);
   const formatCm = (value: number) => `${numberFormatter.format(value)} cm`;
@@ -192,6 +221,10 @@ export default function Home() {
   useEffect(() => {
     document.documentElement.lang = language;
   }, [language]);
+
+  useEffect(() => {
+    if (!window.sessionStorage.getItem("patternshift-guide-seen")) setGuideOpen(true);
+  }, []);
 
   useEffect(() => () => {
     if (fileUrl) URL.revokeObjectURL(fileUrl);
@@ -230,6 +263,10 @@ export default function Home() {
     };
   }, [ageGroup, customEase, figure, fit, garment, gender, sourceHeight, sourceSize, sourceStature, sourceWidth, stretch, targetSize, targetStature]);
 
+  useEffect(() => {
+    setExported(false);
+  }, [calculation]);
+
   const equivalence = SIZE_EQUIVALENTS[system][gender][targetSize];
   const confidenceIsWarning = calculation.confidenceKey === "manualAnchors";
 
@@ -239,7 +276,7 @@ export default function Home() {
     if (nextFile.size > 25 * 1024 * 1024) { setMessage(t.fileTooLarge); return; }
     if (fileUrl) URL.revokeObjectURL(fileUrl);
     const nextUrl = URL.createObjectURL(nextFile);
-    setFile(nextFile); setFileUrl(nextUrl); setMessage("");
+    setFile(nextFile); setFileUrl(nextUrl); setMessage(""); setProfileConfirmed(false); setExported(false);
     if (extension === "svg") {
       try {
         const svg = new DOMParser().parseFromString(await nextFile.text(), "image/svg+xml").documentElement;
@@ -260,8 +297,31 @@ export default function Home() {
 
   function removeFile() {
     if (fileUrl) URL.revokeObjectURL(fileUrl);
-    setFile(null); setFileUrl(""); setMessage("");
+    setFile(null); setFileUrl(""); setMessage(""); setProfileConfirmed(false); setExported(false);
     if (fileInputRef.current) fileInputRef.current.value = "";
+  }
+
+  async function useDemoPattern() {
+    const demoFile = new File([DEMO_PATTERN_SVG], "PatternShift-demo-dress.svg", { type: "image/svg+xml" });
+    await useFile(demoFile);
+    window.sessionStorage.setItem("patternshift-guide-seen", "true");
+    setGuideOpen(false);
+    window.setTimeout(() => settingsSectionRef.current?.scrollIntoView({ behavior: "smooth", block: "start" }), 120);
+  }
+
+  function changeGuideOpen(open: boolean) {
+    setGuideOpen(open);
+    if (!open) window.sessionStorage.setItem("patternshift-guide-seen", "true");
+  }
+
+  function goToStep(step: number) {
+    const target = step === 0 ? uploadSectionRef.current : step === 1 ? settingsSectionRef.current : previewSectionRef.current;
+    target?.scrollIntoView({ behavior: "smooth", block: "start" });
+  }
+
+  function confirmProfile() {
+    setProfileConfirmed(true);
+    window.setTimeout(() => previewSectionRef.current?.scrollIntoView({ behavior: "smooth", block: "start" }), 100);
   }
 
   async function exportPdf() {
@@ -310,6 +370,7 @@ export default function Home() {
       const anchor = document.createElement("a"); anchor.href = url;
       anchor.download = `${file.name.replace(/\.[^.]+$/, "")}-${sourceSize}-to-${targetSize}-A4.pdf`;
       anchor.click(); URL.revokeObjectURL(url);
+      setExported(true);
       setMessage(pages.length === 1 ? t.pdfReadyOne : t.pdfReadyMany.replace("{count}", String(pages.length)));
     } catch { setMessage(t.pdfError); }
     finally { setExporting(false); }
@@ -321,6 +382,19 @@ export default function Home() {
   const figureOptions = [["standard", t.standard], ["hourglass", t.hourglass], ["pear", t.pear], ["athletic", t.athletic], ["rounded", t.rounded]];
   const fitOptions = [["close", t.closeFitting], ["regular", t.regularFit], ["loose", t.loose]];
   const stretchOptions = [["none", t.noStretch], ["low", t.lowStretch], ["medium", t.mediumStretch], ["high", t.highStretch]];
+  const currentStep = exported ? 3 : !file ? 0 : !profileConfirmed ? 1 : 2;
+  const guideSteps = [
+    { title: t.guideStepOneTitle, description: t.guideStepOneDesc, complete: Boolean(file) },
+    { title: t.guideStepTwoTitle, description: t.guideStepTwoDesc, complete: profileConfirmed },
+    { title: t.guideStepThreeTitle, description: t.guideStepThreeDesc, complete: exported },
+  ];
+  const nextAction = currentStep === 0
+    ? { title: t.nextUploadTitle, description: t.nextUploadDesc, label: t.goToUpload }
+    : currentStep === 1
+      ? { title: t.nextProfileTitle, description: t.nextProfileDesc, label: t.goToSettings }
+      : currentStep === 2
+        ? { title: t.nextPreviewTitle, description: t.nextPreviewDesc, label: t.goToPreview }
+        : { title: t.journeyDoneTitle, description: t.journeyDoneDesc, label: "" };
 
   return (
     <main className="min-h-screen bg-[#f4f0e8] text-[#251f2b]">
@@ -332,6 +406,7 @@ export default function Home() {
           </div>
           <div className="flex items-center gap-2">
             <div className="hidden items-center gap-2 rounded-full border border-[#d6cdc1] bg-white/70 px-3 py-1.5 text-xs font-medium text-[#625865] backdrop-blur md:flex"><ShieldCheck className="size-3.5 text-[#5b3b68]" />{t.privacy}</div>
+            <Button variant="outline" size="sm" className="rounded-full border-[#cfc3d2] bg-white/90 text-[#563961]" onClick={() => setGuideOpen(true)}><CircleHelp />{t.helpButton}</Button>
             <Select value={language} onValueChange={(value) => setLanguage(value as Language)}>
               <SelectTrigger aria-label={t.language} className="h-9 min-w-32 rounded-full border-[#cfc3d2] bg-white/90 font-semibold text-[#563961]"><Languages className="size-4" /><SelectValue /></SelectTrigger>
               <SelectContent>{(Object.keys(languageNames) as Language[]).map((code) => <SelectItem key={code} value={code}>{languageNames[code]}</SelectItem>)}</SelectContent>
@@ -339,6 +414,29 @@ export default function Home() {
           </div>
         </div>
       </header>
+
+      <Dialog open={guideOpen} onOpenChange={changeGuideOpen}>
+        <DialogContent className="max-h-[90vh] max-w-3xl gap-0 overflow-y-auto rounded-3xl border-[#d5c7d9] bg-[#fffdf9] p-0 shadow-2xl">
+          <DialogHeader className="guide-dialog-header px-6 py-7 text-left sm:px-8">
+            <span className="mb-1 inline-flex w-fit items-center gap-2 rounded-full bg-white/15 px-3 py-1 text-xs font-bold uppercase tracking-[0.14em] text-white"><Sparkles className="size-3.5" />{t.guideBadge}</span>
+            <DialogTitle className="max-w-xl font-serif text-3xl leading-tight text-white sm:text-4xl">{t.guideTitle}</DialogTitle>
+            <DialogDescription className="max-w-2xl text-sm leading-6 text-white/75">{t.guideIntro}</DialogDescription>
+          </DialogHeader>
+          <div className="grid gap-3 px-6 py-6 sm:grid-cols-3 sm:px-8">
+            {guideSteps.map((step, index) => (
+              <div key={step.title} className="rounded-2xl border border-[#e1d8cf] bg-[#faf7f1] p-4">
+                <span className="mb-3 grid size-8 place-items-center rounded-full bg-[#5b3b68] font-serif text-sm font-bold text-white">{index + 1}</span>
+                <h3 className="font-serif text-lg font-semibold">{step.title}</h3>
+                <p className="mt-2 text-xs leading-5 text-[#716873]">{step.description}</p>
+              </div>
+            ))}
+          </div>
+          <div className="flex flex-col gap-3 border-t border-[#e2d9cf] bg-[#f7f2ea] px-6 py-5 sm:flex-row sm:justify-end sm:px-8">
+            <Button variant="outline" className="rounded-xl border-[#bfaec4]" onClick={() => { changeGuideOpen(false); window.setTimeout(() => goToStep(0), 80); }}><FileUp />{t.useMyPattern}</Button>
+            <Button className="rounded-xl bg-[#5b3b68] hover:bg-[#493055]" onClick={() => void useDemoPattern()}><PlayCircle />{t.tryDemo}</Button>
+          </div>
+        </DialogContent>
+      </Dialog>
 
       <section className="atelier-hero border-b border-[#d9d0c3]" style={{ backgroundImage: `linear-gradient(90deg, rgba(250,247,240,.98) 0%, rgba(250,247,240,.9) 58%, rgba(250,247,240,.35) 100%), url('${publicBasePath}/atelier-pattern.png')` }}>
         <div className="mx-auto grid max-w-[1500px] gap-5 px-4 py-7 sm:px-7 lg:grid-cols-[1fr_auto] lg:items-end lg:py-9">
@@ -355,13 +453,43 @@ export default function Home() {
         </div>
       </section>
 
-      <div className="mx-auto grid max-w-[1500px] gap-5 px-4 py-5 sm:px-7 xl:grid-cols-[390px_minmax(0,1fr)]">
+      <section className="mx-auto max-w-[1500px] px-4 pt-5 sm:px-7" aria-labelledby="guided-setup-title">
+        <div className="guide-shell">
+          <div className="guide-intro">
+            <div>
+              <p className="mb-1 flex items-center gap-2 text-[11px] font-bold uppercase tracking-[0.15em] text-[#76517e]"><ClipboardCheck className="size-4" />{t.guideBadge}</p>
+              <h2 id="guided-setup-title" className="font-serif text-2xl font-semibold">{t.journeyTitle}</h2>
+              <p className="mt-1 max-w-xl text-xs leading-5 text-[#706671]">{t.journeyDesc}</p>
+            </div>
+            <Button variant="ghost" size="sm" className="text-[#61406b]" onClick={() => setGuideOpen(true)}><CircleHelp />{t.helpButton}</Button>
+          </div>
+          <div className="guide-steps">
+            {guideSteps.map((step, index) => {
+              const isCurrent = currentStep === index;
+              return (
+                <button key={step.title} type="button" className={`guide-step ${step.complete ? "is-complete" : ""} ${isCurrent ? "is-current" : ""}`} onClick={() => goToStep(index)} aria-current={isCurrent ? "step" : undefined}>
+                  <span className="guide-step-number">{step.complete ? <Check className="size-4" /> : index + 1}</span>
+                  <span><strong>{step.title}</strong><small>{step.complete ? t.stepComplete : isCurrent ? t.stepCurrent : step.description}</small></span>
+                </button>
+              );
+            })}
+          </div>
+          <div className={`next-action ${currentStep === 3 ? "is-done" : ""}`}>
+            <span className="grid size-10 shrink-0 place-items-center rounded-full bg-white text-[#5b3b68] shadow-sm">{currentStep === 3 ? <CheckCircle2 className="size-5" /> : <ArrowRight className="size-5" />}</span>
+            <div className="min-w-0 flex-1"><strong className="block font-serif text-lg">{nextAction.title}</strong><p className="mt-0.5 text-xs leading-5 text-[#6e6370]">{nextAction.description}</p></div>
+            {currentStep < 3 && <Button size="sm" className="shrink-0 rounded-xl bg-[#5b3b68] hover:bg-[#493055]" onClick={() => currentStep === 0 ? fileInputRef.current?.click() : goToStep(currentStep)}>{nextAction.label}<ArrowRight /></Button>}
+          </div>
+        </div>
+      </section>
+
+      <div className="mx-auto grid max-w-[1500px] gap-5 px-4 pb-5 pt-4 sm:px-7 xl:grid-cols-[390px_minmax(0,1fr)]">
         <aside className="space-y-4">
-          <section className="studio-card overflow-hidden">
+          <section ref={uploadSectionRef} className={`studio-card scroll-mt-4 overflow-hidden ${currentStep === 0 ? "guide-focus" : ""}`}>
             <SectionHeading number="01" title={t.uploadTitle} subtitle={t.uploadSubtitle} />
             <div className="p-4">
+              <InlineHint text={`${t.uploadWhy} ${t.uploadWhat}`} />
               {!file ? (
-                <button type="button" className={`upload-zone ${dragActive ? "is-active" : ""}`} onClick={() => fileInputRef.current?.click()} onDragEnter={(event) => { event.preventDefault(); setDragActive(true); }} onDragOver={(event) => event.preventDefault()} onDragLeave={() => setDragActive(false)} onDrop={(event) => { event.preventDefault(); setDragActive(false); const dropped = event.dataTransfer.files[0]; if (dropped) void useFile(dropped); }}>
+                <button type="button" className={`upload-zone mt-3 ${dragActive ? "is-active" : ""}`} onClick={() => fileInputRef.current?.click()} onDragEnter={(event) => { event.preventDefault(); setDragActive(true); }} onDragOver={(event) => event.preventDefault()} onDragLeave={() => setDragActive(false)} onDrop={(event) => { event.preventDefault(); setDragActive(false); const dropped = event.dataTransfer.files[0]; if (dropped) void useFile(dropped); }}>
                   <span className="grid size-11 place-items-center rounded-full bg-[#ede5ef] text-[#62406d]"><FileUp className="size-5" /></span><strong>{t.dropPattern}</strong><span>{t.chooseFormats}</span>
                 </button>
               ) : (
@@ -372,16 +500,19 @@ export default function Home() {
                 </div>
               )}
               <input ref={fileInputRef} className="sr-only" type="file" accept=".svg,.png,.jpg,.jpeg,.webp" onChange={handleFile} />
+              {!file && <div className="mt-3 flex items-center gap-3 rounded-xl border border-[#dfd4c9] bg-[#faf7f1] p-3"><PlayCircle className="size-5 shrink-0 text-[#6a4774]" /><p className="min-w-0 flex-1 text-[11px] leading-4 text-[#716873]">{t.demoHint}</p><Button variant="outline" size="sm" className="shrink-0 rounded-lg border-[#c7b7ca] bg-white" onClick={() => void useDemoPattern()}>{t.useDemo}</Button></div>}
               <div className="mt-4 grid grid-cols-2 gap-3">
                 <Field label={t.originalWidth} suffix="cm"><Input value={sourceWidth} min={1} step={0.1} type="number" onChange={(event) => setSourceWidth(Math.max(1, Number(event.target.value)))} /></Field>
                 <Field label={t.originalHeight} suffix="cm"><Input value={sourceHeight} min={1} step={0.1} type="number" onChange={(event) => setSourceHeight(Math.max(1, Number(event.target.value)))} /></Field>
               </div>
+              <p className="mt-2 text-[10px] leading-4 text-[#827783]">{t.dimensionsHelp}</p>
             </div>
           </section>
 
-          <section className="studio-card overflow-hidden">
+          <section ref={settingsSectionRef} className={`studio-card scroll-mt-4 overflow-hidden ${currentStep === 1 ? "guide-focus" : ""}`}>
             <SectionHeading number="02" title={t.sourceTargetTitle} subtitle={t.sourceTargetSubtitle} />
             <div className="space-y-4 p-4">
+              <InlineHint text={t.sourceTargetWhy} />
               <Tabs value={gender} onValueChange={(value) => setGender(value as Gender)}><TabsList className="grid w-full grid-cols-2 bg-[#ece6dc]"><TabsTrigger value="women">{t.women}</TabsTrigger><TabsTrigger value="men">{t.men}</TabsTrigger></TabsList></Tabs>
               <div className="grid grid-cols-2 gap-3"><SelectField label={t.sizingSystem} value={system} onChange={setSystem} options={sizingOptions} /><SelectField label={t.ageGroup} value={ageGroup} onChange={setAgeGroup} options={ageOptions} /></div>
               <div className="conversion-row"><SelectField label={t.originalSize} value={sourceSize} onChange={(value) => setSourceSize(value as Size)} options={SIZES.map((size) => [size, size])} /><ArrowRight className="mt-6 size-4 shrink-0 text-[#8d7a92]" /><SelectField label={t.targetSize} value={targetSize} onChange={(value) => setTargetSize(value as Size)} options={SIZES.map((size) => [size, size])} /></div>
@@ -389,14 +520,16 @@ export default function Home() {
             </div>
           </section>
 
-          <section className="studio-card overflow-hidden">
+          <section className={`studio-card overflow-hidden ${currentStep === 1 ? "guide-focus-secondary" : ""}`}>
             <SectionHeading number="03" title={t.constructionTitle} subtitle={t.constructionSubtitle} />
             <div className="space-y-4 p-4">
+              <InlineHint text={t.constructionWhy} />
               <div><Label className="mb-2 text-xs text-[#6c626d]">{t.garmentType}</Label><div className="grid grid-cols-2 gap-2">{GARMENT_ITEMS.map((item) => <button key={item.value} type="button" onClick={() => setGarment(item.value)} className={`option-tile ${garment === item.value ? "is-selected" : ""}`}><span className="flex items-center gap-1.5 font-semibold">{garment === item.value && <Check className="size-3.5" />}{t[item.label]}</span><small>{t[item.description]}</small></button>)}</div></div>
               <div className="grid grid-cols-2 gap-3"><SelectField label={t.figureProfile} value={figure} onChange={setFigure} options={figureOptions} /><SelectField label={t.fit} value={fit} onChange={setFit} options={fitOptions} /></div>
               <SelectField label={t.fabricStretch} value={stretch} onChange={setStretch} options={stretchOptions} />
               <div className="rounded-xl bg-[#f1ece4] p-3"><div className="mb-3 flex items-center justify-between text-xs font-medium"><span>{t.designerEase}</span><strong>{customEase > 0 ? "+" : ""}{customEase} cm</strong></div><Slider value={[customEase]} min={-4} max={16} step={1} onValueChange={(value) => setCustomEase(value[0])} className="[&_[data-slot=slider-range]]:bg-[#63416e] [&_[data-slot=slider-thumb]]:border-[#63416e]" /><div className="mt-2 flex justify-between text-[10px] text-[#807681]"><span>−4 {t.close}</span><span>0 {t.standard.toLowerCase()}</span><span>+16 {t.volume}</span></div></div>
               <CheckRow checked={preserveSeam} onChange={setPreserveSeam} label={t.preserveSeam} />
+              <Button className="w-full rounded-xl bg-[#5b3b68] hover:bg-[#493055]" disabled={!file} onClick={confirmProfile}>{t.continueToPreview}<ArrowRight /></Button>
             </div>
           </section>
         </aside>
@@ -407,13 +540,14 @@ export default function Home() {
             <div className="overflow-x-auto"><table className="measurement-table"><thead><tr><th>{t.measurement}</th><th>{sourceSize} {t.source}</th><th>{targetSize} {t.target}</th><th>{t.change}</th></tr></thead><tbody>{(["chest", "waist", "hips"] as const).map((key) => { const source = calculation.sourceBody[key]; const target = calculation.targetBody[key]; return <tr key={key}><td>{t[key]}</td><td>{formatCm(source)}</td><td>{formatCm(target)}</td><td className={target >= source ? "positive" : "negative"}>{target >= source ? "+" : ""}{numberFormatter.format(target - source)} cm</td></tr>; })}</tbody></table></div>
           </div>
 
-          <div className="studio-card overflow-hidden">
+          <div ref={previewSectionRef} className={`studio-card scroll-mt-4 overflow-hidden ${currentStep === 2 ? "guide-focus" : ""}`}>
             <div className="flex flex-wrap items-center justify-between gap-3 border-b border-[#ded6cb] px-4 py-3 sm:px-5"><div><h2 className="font-serif text-xl font-semibold">{t.patternPreview}</h2><p className="text-xs text-[#756c76]">{t.previewSubtitle}</p></div><CheckRow checked={showOriginal} onChange={setShowOriginal} label={t.showOriginal} /></div>
+            <div className="border-b border-[#e3dbd1] px-4 py-3 sm:px-5"><InlineHint text={t.previewHelp} /></div>
             <div className="pattern-workspace"><div className="ruler ruler-top" aria-hidden="true" /><div className="ruler ruler-left" aria-hidden="true" />{!fileUrl ? <button type="button" className="empty-preview" onClick={() => fileInputRef.current?.click()}><span className="grid size-16 place-items-center rounded-full border border-[#cbbfd0] bg-white text-[#6a4b73] shadow-sm"><Maximize2 className="size-7" /></span><strong>{t.emptyTitle}</strong><span>{t.emptyDesc}</span><span className="mt-1 rounded-full bg-[#5b3b68] px-4 py-2 text-xs font-semibold text-white">{t.choosePattern}</span></button> : <div className="preview-stage">{showOriginal && <img src={fileUrl} alt={t.originalAlt} className="pattern-image original" />}<img src={fileUrl} alt={`${t.targetAlt} ${targetSize}`} className="pattern-image target" style={{ transform: `scale(${calculation.widthScale}, ${calculation.heightScale})` }} /><div className="preview-legend"><span><i className="legend-original" />{t.original} {sourceSize}</span><span><i className="legend-target" />{t.draft} {targetSize}</span></div></div>}</div>
             <div className="grid border-t border-[#ded6cb] sm:grid-cols-4"><Metric label={t.widthScale} value={`${numberFormatter.format(calculation.widthScale * 100)}%`} detail={`${calculation.widthScale >= 1 ? "+" : ""}${numberFormatter.format((calculation.widthScale - 1) * 100)}%`} /><Metric label={t.heightScale} value={`${numberFormatter.format(calculation.heightScale * 100)}%`} detail={`${calculation.heightScale >= 1 ? "+" : ""}${numberFormatter.format((calculation.heightScale - 1) * 100)}%`} /><Metric label={t.draftWidth} value={formatCm(calculation.targetWidth)} detail={`${t.from} ${formatCm(sourceWidth)}`} /><Metric label={t.draftHeight} value={formatCm(calculation.targetHeight)} detail={`${t.from} ${formatCm(sourceHeight)}`} /></div>
           </div>
 
-          <div className="grid gap-4 lg:grid-cols-[1fr_auto]"><div className="flex gap-3 rounded-2xl border border-[#dfcda9] bg-[#fff8e8] p-4 text-sm text-[#624f32]"><Info className="mt-0.5 size-5 shrink-0 text-[#8e652c]" /><p><strong>{t.fitCheckpoint}</strong> {t.fitNotice}</p></div><Button size="lg" className="h-auto min-h-14 rounded-2xl bg-[#5b3b68] px-6 shadow-md hover:bg-[#493055]" disabled={!file || exporting} onClick={() => void exportPdf()}>{exporting ? <LoaderCircle className="animate-spin" /> : <Download />}<span className="text-left"><strong className="block">{t.downloadPdf}</strong><small className="font-normal text-white/70">{t.printScale}</small></span></Button></div>
+          <div className="grid gap-4 lg:grid-cols-[1fr_auto]"><div className="flex gap-3 rounded-2xl border border-[#dfcda9] bg-[#fff8e8] p-4 text-sm text-[#624f32]"><Info className="mt-0.5 size-5 shrink-0 text-[#8e652c]" /><p><strong>{t.fitCheckpoint}</strong> {t.fitNotice}</p></div><Button size="lg" className="h-auto min-h-14 rounded-2xl bg-[#5b3b68] px-6 shadow-md hover:bg-[#493055]" disabled={!file || !profileConfirmed || exporting} onClick={() => void exportPdf()}>{exporting ? <LoaderCircle className="animate-spin" /> : <Download />}<span className="text-left"><strong className="block">{t.downloadPdf}</strong><small className="font-normal text-white/70">{t.printScale}</small></span></Button></div>
           {message && <div role="status" className="rounded-xl border border-[#d6c9d9] bg-white px-4 py-3 text-sm text-[#5d4b63]">{message}</div>}
         </section>
       </div>
@@ -425,6 +559,10 @@ export default function Home() {
 
 function SectionHeading({ number, title, subtitle }: { number: string; title: string; subtitle: string }) {
   return <div className="section-heading"><span>{number}</span><div><h2>{title}</h2><p>{subtitle}</p></div></div>;
+}
+
+function InlineHint({ text }: { text: string }) {
+  return <div className="inline-hint"><CircleHelp className="mt-0.5 size-4 shrink-0" /><p>{text}</p></div>;
 }
 
 function Field({ label, suffix, children }: { label: string; suffix?: string; children: React.ReactNode }) {

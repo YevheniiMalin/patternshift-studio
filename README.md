@@ -14,6 +14,8 @@ PatternShift Studio is a privacy-first browser application for creating proporti
 - physical width and height calibration
 - tiled A4 PDF export with a 10 mm control square
 - English interface by default, with Russian and Finnish translations
+- first-visit walkthrough, guided three-step setup and contextual explanations
+- one-click demonstration pattern for learning the workflow without a personal file
 - fully local browser processing — uploaded patterns are not sent to a server
 
 ## Accuracy boundary
