@@ -22,6 +22,10 @@ PatternShift Studio is a privacy-first browser application for creating proporti
 
 The current release creates a proportional draft. It does not yet identify and move professional grading anchor points independently. Before cutting final fabric, verify matching seams, grainline, darts, armholes, sleeve caps and fit with a test garment.
 
+## Guided setup
+
+First-time visitors receive a three-step walkthrough. They can upload their own pattern or load the built-in demonstration dress, confirm the source and target profile, review the calculated overlay, and then export tiled A4 pages. The guide and all contextual explanations are available in English, Russian and Finnish.
+
 ## Development
 
 ```bash
