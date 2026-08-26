@@ -89,6 +89,13 @@ body { margin: 0; background: var(--background); color: var(--foreground); font-
 .upload-zone:hover, .upload-zone.is-active { border-color: #6b4a75; background: #f5eef7; transform: translateY(-1px); }
 .upload-zone strong { font-size: .88rem; }
 .upload-zone > span:last-child { color: #857a86; font-size: .67rem; }
+.pdf-import-panel { display: grid; gap: .85rem; border: 1px solid #d5c7d9; border-radius: .9rem; background: linear-gradient(180deg, #fbf6fc, #fffdf9); padding: .85rem; }
+.pdf-thumbnail-strip { display: flex; gap: .45rem; overflow-x: auto; border-block: 1px solid #e1d8df; padding: .65rem .1rem; scrollbar-width: thin; }
+.pdf-thumbnail { position: relative; width: 58px; min-width: 58px; overflow: hidden; border: 2px solid #ddd4da; border-radius: .55rem; background: #fff; padding: 2px; opacity: .42; transition: .16s ease; }
+.pdf-thumbnail:hover { opacity: .78; transform: translateY(-1px); }
+.pdf-thumbnail.is-included { border-color: #694873; opacity: 1; box-shadow: 0 0 0 2px rgba(91,59,104,.1); }
+.pdf-thumbnail img { display: block; width: 100%; aspect-ratio: 3 / 4; object-fit: cover; object-position: top; border-radius: .3rem; }
+.pdf-thumbnail span { position: absolute; right: 4px; bottom: 4px; display: grid; min-width: 1.15rem; height: 1.15rem; place-items: center; border-radius: 999px; background: rgba(37,31,43,.82); color: #fff; font-size: .58rem; font-weight: 700; }
 .conversion-row { display: grid; grid-template-columns: minmax(0,1fr) auto minmax(0,1fr); align-items: center; gap: .45rem; }
 .option-tile { min-height: 56px; border: 1px solid #ddd4ca; border-radius: .7rem; background: #fff; padding: .55rem .65rem; text-align: left; color: #514853; transition: .16s ease; }
 .option-tile:hover { border-color: #a18da6; }

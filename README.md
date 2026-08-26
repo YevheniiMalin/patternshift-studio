@@ -4,7 +4,8 @@ PatternShift Studio is a privacy-first browser application for creating proporti
 
 ## Current capabilities
 
-- SVG, PNG, JPG and WebP pattern upload
+- PDF, SVG, PNG, JPG and WebP pattern upload
+- single-page and tiled multi-page PDF import with page-range and grid controls
 - women’s and men’s XXS–XXL reference charts
 - EU, international, US and UK size equivalents
 - petite, regular and tall stature conversion
@@ -38,7 +39,7 @@ The GitHub Pages workflow builds a static Next.js export automatically from the 
 ## Roadmap
 
 - vector anchor-point editor for true multi-point grading
-- direct PDF and DXF import
+- DXF import
 - custom brand and personal measurement charts
 - seam-line and seam-allowance separation
 - nested multi-size pattern export

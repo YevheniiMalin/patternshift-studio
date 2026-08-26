@@ -54,6 +54,20 @@ type Gender = "women" | "men";
 type Garment = "dress" | "top" | "trousers" | "skirt" | "jacket" | "lingerie" | "accessory";
 type Stature = "petite" | "regular" | "tall";
 type ConfidenceKey = "uniformScale" | "manualAnchors" | "proportionalDraft";
+type PatternFileKind = "image" | "pdf";
+type PdfImportMode = "single" | "tiled";
+
+type PdfViewport = { width: number; height: number };
+type PdfPage = {
+  getViewport: (options: { scale: number }) => PdfViewport;
+  render: (options: { canvas: HTMLCanvasElement; canvasContext: CanvasRenderingContext2D; viewport: PdfViewport }) => { promise: Promise<void> };
+};
+type PdfDocument = {
+  numPages: number;
+  getPage: (pageNumber: number) => Promise<PdfPage>;
+  cleanup?: () => Promise<void>;
+  destroy?: () => Promise<void>;
+};
 
 const SIZES: Size[] = ["XXS", "XS", "S", "M", "L", "XL", "XXL"];
 const publicBasePath = process.env.NEXT_PUBLIC_BASE_PATH ?? "";
@@ -136,6 +150,50 @@ function parseSvgLength(value: string | null): number | null {
   return (number * 2.54) / 96;
 }
 
+function guessPdfLayout(pageCount: number) {
+  let best = { start: 1, end: pageCount, columns: 1, score: Number.POSITIVE_INFINITY };
+  const maxSkippedPages = Math.min(5, Math.max(0, pageCount - 1));
+  for (let skipped = 0; skipped <= maxSkippedPages; skipped += 1) {
+    const count = pageCount - skipped;
+    for (let columns = 1; columns <= Math.min(10, count); columns += 1) {
+      const rows = Math.ceil(count / columns);
+      const emptyCells = columns * rows - count;
+      const shapePenalty = Math.abs(columns - rows);
+      const score = emptyCells * 2 + shapePenalty + skipped * 0.35 - (skipped === 0 ? 0.15 : 0);
+      if (score < best.score) best = { start: skipped + 1, end: pageCount, columns, score };
+    }
+  }
+  return best;
+}
+
+async function canvasToBlob(canvas: HTMLCanvasElement, type = "image/png", quality?: number) {
+  return new Promise<Blob>((resolve, reject) => {
+    canvas.toBlob((blob) => blob ? resolve(blob) : reject(new Error("Canvas export failed")), type, quality);
+  });
+}
+
+async function renderPdfThumbnail(document: PdfDocument, pageNumber: number) {
+  const page = await document.getPage(pageNumber);
+  const baseViewport = page.getViewport({ scale: 1 });
+  const scale = Math.min(0.34, 118 / baseViewport.width);
+  const viewport = page.getViewport({ scale });
+  const canvas = window.document.createElement("canvas");
+  canvas.width = Math.max(1, Math.round(viewport.width));
+  canvas.height = Math.max(1, Math.round(viewport.height));
+  const context = canvas.getContext("2d", { alpha: false });
+  if (!context) throw new Error("Canvas is not available");
+  context.fillStyle = "#ffffff";
+  context.fillRect(0, 0, canvas.width, canvas.height);
+  await page.render({ canvas, canvasContext: context, viewport }).promise;
+  return canvas.toDataURL("image/jpeg", 0.76);
+}
+
+async function releasePdf(document: PdfDocument | null) {
+  if (!document) return;
+  if (document.destroy) await document.destroy();
+  else if (document.cleanup) await document.cleanup();
+}
+
 function bytesFromDataUrl(dataUrl: string) {
   const binary = atob(dataUrl.split(",")[1]);
   const bytes = new Uint8Array(binary.length);
@@ -187,8 +245,17 @@ function createPdf(jpegs: Uint8Array[], imageWidth: number, imageHeight: number)
 export default function Home() {
   const [language, setLanguage] = useState<Language>("en");
   const [file, setFile] = useState<File | null>(null);
+  const [fileKind, setFileKind] = useState<PatternFileKind>("image");
   const [fileUrl, setFileUrl] = useState("");
   const [dragActive, setDragActive] = useState(false);
+  const [pdfMode, setPdfMode] = useState<PdfImportMode>("single");
+  const [pdfPageCount, setPdfPageCount] = useState(0);
+  const [pdfStartPage, setPdfStartPage] = useState(1);
+  const [pdfEndPage, setPdfEndPage] = useState(1);
+  const [pdfColumns, setPdfColumns] = useState(1);
+  const [pdfThumbnails, setPdfThumbnails] = useState<string[]>([]);
+  const [pdfProcessing, setPdfProcessing] = useState(false);
+  const [pdfLayoutDirty, setPdfLayoutDirty] = useState(false);
   const [gender, setGender] = useState<Gender>("women");
   const [system, setSystem] = useState("eu");
   const [sourceSize, setSourceSize] = useState<Size>("S");
@@ -211,9 +278,10 @@ export default function Home() {
   const [exporting, setExporting] = useState(false);
   const [message, setMessage] = useState("");
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const pdfDocumentRef = useRef<PdfDocument | null>(null);
   const uploadSectionRef = useRef<HTMLElement>(null);
   const settingsSectionRef = useRef<HTMLElement>(null);
-  const previewSectionRef = useRef<HTMLElement>(null);
+  const previewSectionRef = useRef<HTMLDivElement>(null);
   const t = translations[language];
   const numberFormatter = useMemo(() => new Intl.NumberFormat(localeByLanguage[language], { maximumFractionDigits: 1 }), [language]);
   const formatCm = (value: number) => `${numberFormatter.format(value)} cm`;
@@ -223,12 +291,18 @@ export default function Home() {
   }, [language]);
 
   useEffect(() => {
-    if (!window.sessionStorage.getItem("patternshift-guide-seen")) setGuideOpen(true);
+    if (window.sessionStorage.getItem("patternshift-guide-seen")) return;
+    const timer = window.setTimeout(() => setGuideOpen(true), 0);
+    return () => window.clearTimeout(timer);
   }, []);
 
   useEffect(() => () => {
     if (fileUrl) URL.revokeObjectURL(fileUrl);
   }, [fileUrl]);
+
+  useEffect(() => () => {
+    void releasePdf(pdfDocumentRef.current);
+  }, []);
 
   const calculation = useMemo(() => {
     if (garment === "accessory") {
@@ -264,19 +338,146 @@ export default function Home() {
   }, [ageGroup, customEase, figure, fit, garment, gender, sourceHeight, sourceSize, sourceStature, sourceWidth, stretch, targetSize, targetStature]);
 
   useEffect(() => {
-    setExported(false);
+    const timer = window.setTimeout(() => setExported(false), 0);
+    return () => window.clearTimeout(timer);
   }, [calculation]);
 
   const equivalence = SIZE_EQUIVALENTS[system][gender][targetSize];
   const confidenceIsWarning = calculation.confidenceKey === "manualAnchors";
 
-  async function useFile(nextFile: File) {
+  function replacePreviewUrl(nextUrl: string) {
+    setFileUrl((currentUrl) => {
+      if (currentUrl) URL.revokeObjectURL(currentUrl);
+      return nextUrl;
+    });
+  }
+
+  async function buildPdfPreview(document: PdfDocument, startPage: number, endPage: number, columns: number, mode: PdfImportMode) {
+    const safeStart = Math.max(1, Math.min(startPage, document.numPages));
+    const safeEnd = Math.max(safeStart, Math.min(endPage, document.numPages));
+    const pageNumbers = mode === "single"
+      ? [safeStart]
+      : Array.from({ length: safeEnd - safeStart + 1 }, (_, index) => safeStart + index);
+    const safeColumns = mode === "single" ? 1 : Math.max(1, Math.min(columns, pageNumbers.length));
+    const rows = Math.ceil(pageNumbers.length / safeColumns);
+    const firstPage = await document.getPage(pageNumbers[0]);
+    const baseViewport = firstPage.getViewport({ scale: 1 });
+    const maxCanvasSide = 9000;
+    const renderScale = Math.max(0.5, Math.min(1.45, maxCanvasSide / (baseViewport.width * safeColumns), maxCanvasSide / (baseViewport.height * rows)));
+    const cellViewport = firstPage.getViewport({ scale: renderScale });
+    const cellWidth = Math.max(1, Math.round(cellViewport.width));
+    const cellHeight = Math.max(1, Math.round(cellViewport.height));
+    const canvas = window.document.createElement("canvas");
+    canvas.width = cellWidth * safeColumns;
+    canvas.height = cellHeight * rows;
+    const context = canvas.getContext("2d", { alpha: false });
+    if (!context) throw new Error("Canvas is not available");
+    context.fillStyle = "#ffffff";
+    context.fillRect(0, 0, canvas.width, canvas.height);
+
+    for (let index = 0; index < pageNumbers.length; index += 1) {
+      const page = index === 0 ? firstPage : await document.getPage(pageNumbers[index]);
+      const viewport = page.getViewport({ scale: renderScale });
+      const pageCanvas = window.document.createElement("canvas");
+      pageCanvas.width = Math.max(1, Math.round(viewport.width));
+      pageCanvas.height = Math.max(1, Math.round(viewport.height));
+      const pageContext = pageCanvas.getContext("2d", { alpha: false });
+      if (!pageContext) throw new Error("Canvas is not available");
+      pageContext.fillStyle = "#ffffff";
+      pageContext.fillRect(0, 0, pageCanvas.width, pageCanvas.height);
+      await page.render({ canvas: pageCanvas, canvasContext: pageContext, viewport }).promise;
+      const column = index % safeColumns;
+      const row = Math.floor(index / safeColumns);
+      context.drawImage(pageCanvas, column * cellWidth, row * cellHeight, cellWidth, cellHeight);
+    }
+
+    const previewBlob = await canvasToBlob(canvas);
+    replacePreviewUrl(URL.createObjectURL(previewBlob));
+    const pageWidthCm = (baseViewport.width / 72) * 2.54;
+    const pageHeightCm = (baseViewport.height / 72) * 2.54;
+    setSourceWidth(Number((pageWidthCm * safeColumns).toFixed(1)));
+    setSourceHeight(Number((pageHeightCm * rows).toFixed(1)));
+    setPdfStartPage(safeStart);
+    setPdfEndPage(mode === "single" ? safeStart : safeEnd);
+    setPdfColumns(safeColumns);
+    return pageNumbers.length;
+  }
+
+  async function applyPdfLayout() {
+    const document = pdfDocumentRef.current;
+    if (!document) return;
+    setPdfProcessing(true);
+    setMessage(t.pdfProcessing);
+    try {
+      const count = await buildPdfPreview(document, pdfStartPage, pdfEndPage, pdfColumns, pdfMode);
+      setPdfLayoutDirty(false);
+      setProfileConfirmed(false);
+      setExported(false);
+      setMessage(t.pdfLoaded.replace("{count}", String(count)));
+    } catch {
+      setMessage(t.pdfImportError);
+    } finally {
+      setPdfProcessing(false);
+    }
+  }
+
+  async function loadPatternFile(nextFile: File) {
     const extension = nextFile.name.split(".").pop()?.toLowerCase();
-    if (!extension || !["svg", "png", "jpg", "jpeg", "webp"].includes(extension)) { setMessage(t.invalidFile); return; }
+    if (!extension || !["pdf", "svg", "png", "jpg", "jpeg", "webp"].includes(extension)) { setMessage(t.invalidFile); return; }
     if (nextFile.size > 25 * 1024 * 1024) { setMessage(t.fileTooLarge); return; }
-    if (fileUrl) URL.revokeObjectURL(fileUrl);
-    const nextUrl = URL.createObjectURL(nextFile);
-    setFile(nextFile); setFileUrl(nextUrl); setMessage(""); setProfileConfirmed(false); setExported(false);
+    if (pdfDocumentRef.current) {
+      await releasePdf(pdfDocumentRef.current);
+      pdfDocumentRef.current = null;
+    }
+    setFile(nextFile); setMessage(""); setProfileConfirmed(false); setExported(false);
+    setPdfPageCount(0); setPdfThumbnails([]); setPdfLayoutDirty(false);
+
+    if (extension === "pdf") {
+      setFileKind("pdf");
+      setPdfProcessing(true);
+      setMessage(t.pdfReading);
+      try {
+        const pdfjs = await import("pdfjs-dist");
+        pdfjs.GlobalWorkerOptions.workerSrc = `${window.location.origin}${publicBasePath}/pdf.worker.min.mjs`;
+        const loadingTask = pdfjs.getDocument({ data: new Uint8Array(await nextFile.arrayBuffer()) });
+        const document = await loadingTask.promise as unknown as PdfDocument;
+        if (document.numPages > 80) {
+          await releasePdf(document);
+          throw new Error("PDF has too many pages");
+        }
+        pdfDocumentRef.current = document;
+        const layout = guessPdfLayout(document.numPages);
+        const mode: PdfImportMode = document.numPages === 1 ? "single" : "tiled";
+        setPdfMode(mode);
+        setPdfPageCount(document.numPages);
+        setPdfStartPage(layout.start);
+        setPdfEndPage(layout.end);
+        setPdfColumns(mode === "single" ? 1 : layout.columns);
+        const thumbnails: string[] = [];
+        for (let pageNumber = 1; pageNumber <= document.numPages; pageNumber += 1) {
+          thumbnails.push(await renderPdfThumbnail(document, pageNumber));
+        }
+        setPdfThumbnails(thumbnails);
+        const importedPages = await buildPdfPreview(document, layout.start, layout.end, layout.columns, mode);
+        setPdfLayoutDirty(false);
+        setMessage(t.pdfLoaded.replace("{count}", String(importedPages)));
+      } catch {
+        await releasePdf(pdfDocumentRef.current);
+        pdfDocumentRef.current = null;
+        setFile(null);
+        setPdfPageCount(0);
+        setPdfThumbnails([]);
+        replacePreviewUrl("");
+        setMessage(t.pdfImportError);
+        if (fileInputRef.current) fileInputRef.current.value = "";
+      } finally {
+        setPdfProcessing(false);
+      }
+      return;
+    }
+
+    setFileKind("image");
+    replacePreviewUrl(URL.createObjectURL(nextFile));
     if (extension === "svg") {
       try {
         const svg = new DOMParser().parseFromString(await nextFile.text(), "image/svg+xml").documentElement;
@@ -287,23 +488,29 @@ export default function Home() {
           setMessage(t.dimensionsDetected);
         }
       } catch { setMessage(t.enterDimensions); }
+    } else {
+      setMessage(t.enterDimensions);
     }
   }
 
   function handleFile(event: ChangeEvent<HTMLInputElement>) {
     const nextFile = event.target.files?.[0];
-    if (nextFile) void useFile(nextFile);
+    if (nextFile) void loadPatternFile(nextFile);
   }
 
   function removeFile() {
-    if (fileUrl) URL.revokeObjectURL(fileUrl);
-    setFile(null); setFileUrl(""); setMessage(""); setProfileConfirmed(false); setExported(false);
+    if (pdfDocumentRef.current) {
+      void releasePdf(pdfDocumentRef.current);
+      pdfDocumentRef.current = null;
+    }
+    setFile(null); replacePreviewUrl(""); setMessage(""); setProfileConfirmed(false); setExported(false);
+    setFileKind("image"); setPdfPageCount(0); setPdfThumbnails([]); setPdfProcessing(false); setPdfLayoutDirty(false);
     if (fileInputRef.current) fileInputRef.current.value = "";
   }
 
-  async function useDemoPattern() {
+  async function loadDemoPattern() {
     const demoFile = new File([DEMO_PATTERN_SVG], "PatternShift-demo-dress.svg", { type: "image/svg+xml" });
-    await useFile(demoFile);
+    await loadPatternFile(demoFile);
     window.sessionStorage.setItem("patternshift-guide-seen", "true");
     setGuideOpen(false);
     window.setTimeout(() => settingsSectionRef.current?.scrollIntoView({ behavior: "smooth", block: "start" }), 120);
@@ -433,7 +640,7 @@ export default function Home() {
           </div>
           <div className="flex flex-col gap-3 border-t border-[#e2d9cf] bg-[#f7f2ea] px-6 py-5 sm:flex-row sm:justify-end sm:px-8">
             <Button variant="outline" className="rounded-xl border-[#bfaec4]" onClick={() => { changeGuideOpen(false); window.setTimeout(() => goToStep(0), 80); }}><FileUp />{t.useMyPattern}</Button>
-            <Button className="rounded-xl bg-[#5b3b68] hover:bg-[#493055]" onClick={() => void useDemoPattern()}><PlayCircle />{t.tryDemo}</Button>
+            <Button className="rounded-xl bg-[#5b3b68] hover:bg-[#493055]" onClick={() => void loadDemoPattern()}><PlayCircle />{t.tryDemo}</Button>
           </div>
         </DialogContent>
       </Dialog>
@@ -489,23 +696,88 @@ export default function Home() {
             <div className="p-4">
               <InlineHint text={`${t.uploadWhy} ${t.uploadWhat}`} />
               {!file ? (
-                <button type="button" className={`upload-zone mt-3 ${dragActive ? "is-active" : ""}`} onClick={() => fileInputRef.current?.click()} onDragEnter={(event) => { event.preventDefault(); setDragActive(true); }} onDragOver={(event) => event.preventDefault()} onDragLeave={() => setDragActive(false)} onDrop={(event) => { event.preventDefault(); setDragActive(false); const dropped = event.dataTransfer.files[0]; if (dropped) void useFile(dropped); }}>
+                <button type="button" className={`upload-zone mt-3 ${dragActive ? "is-active" : ""}`} onClick={() => fileInputRef.current?.click()} onDragEnter={(event) => { event.preventDefault(); setDragActive(true); }} onDragOver={(event) => event.preventDefault()} onDragLeave={() => setDragActive(false)} onDrop={(event) => { event.preventDefault(); setDragActive(false); const dropped = event.dataTransfer.files[0]; if (dropped) void loadPatternFile(dropped); }}>
                   <span className="grid size-11 place-items-center rounded-full bg-[#ede5ef] text-[#62406d]"><FileUp className="size-5" /></span><strong>{t.dropPattern}</strong><span>{t.chooseFormats}</span>
                 </button>
               ) : (
                 <div className="flex items-center gap-3 rounded-xl border border-[#d4c7d8] bg-[#f6eff8] p-3">
                   <div className="grid size-10 shrink-0 place-items-center rounded-lg bg-white text-[#63416e]"><Layers3 className="size-5" /></div>
-                  <div className="min-w-0 flex-1"><p className="truncate text-sm font-semibold">{file.name}</p><p className="text-xs text-[#756a76]">{(file.size / 1024 / 1024).toFixed(2)} MB · {t.ready}</p></div>
+                  <div className="min-w-0 flex-1"><p className="truncate text-sm font-semibold">{file.name}</p><p className="text-xs text-[#756a76]">{(file.size / 1024 / 1024).toFixed(2)} MB · {fileKind === "pdf" ? t.pdfPageCount.replace("{count}", String(pdfPageCount)) : t.ready}</p></div>
                   <Button variant="ghost" size="icon-sm" aria-label={t.removePattern} onClick={removeFile}><X /></Button>
                 </div>
               )}
-              <input ref={fileInputRef} className="sr-only" type="file" accept=".svg,.png,.jpg,.jpeg,.webp" onChange={handleFile} />
-              {!file && <div className="mt-3 flex items-center gap-3 rounded-xl border border-[#dfd4c9] bg-[#faf7f1] p-3"><PlayCircle className="size-5 shrink-0 text-[#6a4774]" /><p className="min-w-0 flex-1 text-[11px] leading-4 text-[#716873]">{t.demoHint}</p><Button variant="outline" size="sm" className="shrink-0 rounded-lg border-[#c7b7ca] bg-white" onClick={() => void useDemoPattern()}>{t.useDemo}</Button></div>}
+              <input ref={fileInputRef} className="sr-only" type="file" accept=".pdf,.svg,.png,.jpg,.jpeg,.webp" onChange={handleFile} />
+              {!file && <div className="mt-3 flex items-center gap-3 rounded-xl border border-[#dfd4c9] bg-[#faf7f1] p-3"><PlayCircle className="size-5 shrink-0 text-[#6a4774]" /><p className="min-w-0 flex-1 text-[11px] leading-4 text-[#716873]">{t.demoHint}</p><Button variant="outline" size="sm" className="shrink-0 rounded-lg border-[#c7b7ca] bg-white" onClick={() => void loadDemoPattern()}>{t.useDemo}</Button></div>}
+              {file && fileKind === "pdf" && (
+                <div className="pdf-import-panel mt-3">
+                  <div>
+                    <h3 className="font-serif text-base font-semibold">{t.pdfImportTitle}</h3>
+                    <p className="mt-1 text-[11px] leading-4 text-[#716873]">{t.pdfImportHelp}</p>
+                  </div>
+                  <div>
+                    <Label className="mb-1.5 text-xs text-[#6c626d]">{t.pdfMode}</Label>
+                    <Tabs value={pdfMode} onValueChange={(value) => {
+                      const mode = value as PdfImportMode;
+                      setPdfMode(mode);
+                      setPdfLayoutDirty(true);
+                      if (mode === "single") {
+                        setPdfEndPage(pdfStartPage);
+                        setPdfColumns(1);
+                      } else {
+                        const layout = guessPdfLayout(pdfPageCount);
+                        setPdfStartPage(layout.start);
+                        setPdfEndPage(layout.end);
+                        setPdfColumns(layout.columns);
+                      }
+                    }}>
+                      <TabsList className="grid h-auto w-full grid-cols-2 bg-[#ece6dc] p-1">
+                        <TabsTrigger className="min-h-11 whitespace-normal text-[11px] leading-4" value="single">{t.pdfSinglePage}</TabsTrigger>
+                        <TabsTrigger className="min-h-11 whitespace-normal text-[11px] leading-4" value="tiled">{t.pdfTiledPages}</TabsTrigger>
+                      </TabsList>
+                    </Tabs>
+                    <p className="mt-1.5 text-[10px] leading-4 text-[#827783]">{pdfMode === "single" ? t.pdfSingleHelp : t.pdfTiledHelp}</p>
+                  </div>
+                  <div className={`grid gap-3 ${pdfMode === "single" ? "grid-cols-1" : "grid-cols-3"}`}>
+                    <Field label={t.pdfFirstPage}>
+                      <Input value={pdfStartPage} min={1} max={pdfPageCount} type="number" onChange={(event) => {
+                        const value = Math.max(1, Math.min(pdfPageCount, Number(event.target.value)));
+                        setPdfStartPage(value);
+                        setPdfLayoutDirty(true);
+                        if (pdfMode === "single") setPdfEndPage(value);
+                        else if (value > pdfEndPage) setPdfEndPage(value);
+                      }} />
+                    </Field>
+                    {pdfMode === "tiled" && <Field label={t.pdfLastPage}><Input value={pdfEndPage} min={pdfStartPage} max={pdfPageCount} type="number" onChange={(event) => { setPdfEndPage(Math.max(pdfStartPage, Math.min(pdfPageCount, Number(event.target.value)))); setPdfLayoutDirty(true); }} /></Field>}
+                    {pdfMode === "tiled" && <Field label={t.pdfColumns}><Input value={pdfColumns} min={1} max={Math.max(1, pdfEndPage - pdfStartPage + 1)} type="number" onChange={(event) => { setPdfColumns(Math.max(1, Math.min(pdfEndPage - pdfStartPage + 1, Number(event.target.value)))); setPdfLayoutDirty(true); }} /></Field>}
+                  </div>
+                  {pdfThumbnails.length > 0 && (
+                    <div className="pdf-thumbnail-strip" aria-label={t.pdfPageCount.replace("{count}", String(pdfPageCount))}>
+                      {pdfThumbnails.map((thumbnail, index) => {
+                        const pageNumber = index + 1;
+                        const included = pdfMode === "single" ? pageNumber === pdfStartPage : pageNumber >= pdfStartPage && pageNumber <= pdfEndPage;
+                        return (
+                          <button key={pageNumber} type="button" className={`pdf-thumbnail ${included ? "is-included" : ""}`} onClick={() => {
+                            if (pdfMode === "single") {
+                              setPdfStartPage(pageNumber);
+                              setPdfEndPage(pageNumber);
+                              setPdfLayoutDirty(true);
+                            }
+                          }} aria-label={`${t.pdfPage} ${pageNumber}, ${included ? t.pdfIncluded : t.pdfExcluded}`} aria-pressed={included}>
+                            <img src={thumbnail} alt="" />
+                            <span>{pageNumber}</span>
+                          </button>
+                        );
+                      })}
+                    </div>
+                  )}
+                  <Button className={`w-full rounded-xl bg-[#6a4774] hover:bg-[#54385d] ${pdfLayoutDirty ? "ring-2 ring-[#c8a9cf] ring-offset-2" : ""}`} disabled={pdfProcessing} onClick={() => void applyPdfLayout()}>{pdfProcessing ? <LoaderCircle className="animate-spin" /> : <Layers3 />}{t.pdfApplyLayout}</Button>
+                </div>
+              )}
               <div className="mt-4 grid grid-cols-2 gap-3">
                 <Field label={t.originalWidth} suffix="cm"><Input value={sourceWidth} min={1} step={0.1} type="number" onChange={(event) => setSourceWidth(Math.max(1, Number(event.target.value)))} /></Field>
                 <Field label={t.originalHeight} suffix="cm"><Input value={sourceHeight} min={1} step={0.1} type="number" onChange={(event) => setSourceHeight(Math.max(1, Number(event.target.value)))} /></Field>
               </div>
-              <p className="mt-2 text-[10px] leading-4 text-[#827783]">{t.dimensionsHelp}</p>
+              <p className="mt-2 text-[10px] leading-4 text-[#827783]">{fileKind === "pdf" ? t.pdfDimensionsHelp : t.dimensionsHelp}</p>
             </div>
           </section>
 
@@ -529,7 +801,7 @@ export default function Home() {
               <SelectField label={t.fabricStretch} value={stretch} onChange={setStretch} options={stretchOptions} />
               <div className="rounded-xl bg-[#f1ece4] p-3"><div className="mb-3 flex items-center justify-between text-xs font-medium"><span>{t.designerEase}</span><strong>{customEase > 0 ? "+" : ""}{customEase} cm</strong></div><Slider value={[customEase]} min={-4} max={16} step={1} onValueChange={(value) => setCustomEase(value[0])} className="[&_[data-slot=slider-range]]:bg-[#63416e] [&_[data-slot=slider-thumb]]:border-[#63416e]" /><div className="mt-2 flex justify-between text-[10px] text-[#807681]"><span>−4 {t.close}</span><span>0 {t.standard.toLowerCase()}</span><span>+16 {t.volume}</span></div></div>
               <CheckRow checked={preserveSeam} onChange={setPreserveSeam} label={t.preserveSeam} />
-              <Button className="w-full rounded-xl bg-[#5b3b68] hover:bg-[#493055]" disabled={!file} onClick={confirmProfile}>{t.continueToPreview}<ArrowRight /></Button>
+              <Button className="w-full rounded-xl bg-[#5b3b68] hover:bg-[#493055]" disabled={!file || !fileUrl || pdfProcessing || pdfLayoutDirty} onClick={confirmProfile}>{t.continueToPreview}<ArrowRight /></Button>
             </div>
           </section>
         </aside>
@@ -547,7 +819,7 @@ export default function Home() {
             <div className="grid border-t border-[#ded6cb] sm:grid-cols-4"><Metric label={t.widthScale} value={`${numberFormatter.format(calculation.widthScale * 100)}%`} detail={`${calculation.widthScale >= 1 ? "+" : ""}${numberFormatter.format((calculation.widthScale - 1) * 100)}%`} /><Metric label={t.heightScale} value={`${numberFormatter.format(calculation.heightScale * 100)}%`} detail={`${calculation.heightScale >= 1 ? "+" : ""}${numberFormatter.format((calculation.heightScale - 1) * 100)}%`} /><Metric label={t.draftWidth} value={formatCm(calculation.targetWidth)} detail={`${t.from} ${formatCm(sourceWidth)}`} /><Metric label={t.draftHeight} value={formatCm(calculation.targetHeight)} detail={`${t.from} ${formatCm(sourceHeight)}`} /></div>
           </div>
 
-          <div className="grid gap-4 lg:grid-cols-[1fr_auto]"><div className="flex gap-3 rounded-2xl border border-[#dfcda9] bg-[#fff8e8] p-4 text-sm text-[#624f32]"><Info className="mt-0.5 size-5 shrink-0 text-[#8e652c]" /><p><strong>{t.fitCheckpoint}</strong> {t.fitNotice}</p></div><Button size="lg" className="h-auto min-h-14 rounded-2xl bg-[#5b3b68] px-6 shadow-md hover:bg-[#493055]" disabled={!file || !profileConfirmed || exporting} onClick={() => void exportPdf()}>{exporting ? <LoaderCircle className="animate-spin" /> : <Download />}<span className="text-left"><strong className="block">{t.downloadPdf}</strong><small className="font-normal text-white/70">{t.printScale}</small></span></Button></div>
+          <div className="grid gap-4 lg:grid-cols-[1fr_auto]"><div className="flex gap-3 rounded-2xl border border-[#dfcda9] bg-[#fff8e8] p-4 text-sm text-[#624f32]"><Info className="mt-0.5 size-5 shrink-0 text-[#8e652c]" /><p><strong>{t.fitCheckpoint}</strong> {t.fitNotice}</p></div><Button size="lg" className="h-auto min-h-14 rounded-2xl bg-[#5b3b68] px-6 shadow-md hover:bg-[#493055]" disabled={!file || !fileUrl || !profileConfirmed || exporting || pdfProcessing || pdfLayoutDirty} onClick={() => void exportPdf()}>{exporting ? <LoaderCircle className="animate-spin" /> : <Download />}<span className="text-left"><strong className="block">{t.downloadPdf}</strong><small className="font-normal text-white/70">{t.printScale}</small></span></Button></div>
           {message && <div role="status" className="rounded-xl border border-[#d6c9d9] bg-white px-4 py-3 text-sm text-[#5d4b63]">{message}</div>}
         </section>
       </div>
