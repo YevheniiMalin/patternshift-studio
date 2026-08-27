@@ -10,8 +10,11 @@ import {
   CircleAlert,
   Download,
   FileImage,
+  Focus,
   Languages,
+  RefreshCcw,
   Ruler,
+  ScanLine,
   Scissors,
   ShieldCheck,
   Sparkles,
@@ -23,6 +26,7 @@ import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { Slider } from "@/components/ui/slider";
 import {
   Select,
   SelectContent,
@@ -38,6 +42,8 @@ type Sleeve = "none" | "short" | "long";
 type Coverage = "front" | "frontBack" | "multi";
 type Profile = "women" | "men";
 type Size = "XS" | "S" | "M" | "L" | "XL";
+type ViewRole = "front" | "back" | "side" | "detail";
+type DartMode = "none" | "waist" | "bustWaist";
 type Measurements = {
   bust: number;
   waist: number;
@@ -46,7 +52,16 @@ type Measurements = {
   backLength: number;
   garmentLength: number;
 };
-type ReferenceImage = { name: string; url: string };
+type ReferenceImage = { name: string; url: string; role: ViewRole };
+type ShapeProfile = { shoulder: number; waist: number; hip: number; hem: number; length: number };
+type ShapeAnalysis = {
+  sourceName: string;
+  previewUrl: string;
+  score: number;
+  foregroundCoverage: number;
+  ratios: ShapeProfile;
+};
+type PatternCheck = { label: string; detail: string; passed: boolean };
 
 const publicBasePath = process.env.NEXT_PUBLIC_BASE_PATH ?? "";
 
@@ -67,15 +82,148 @@ const SIZE_PRESETS: Record<Profile, Record<Size, Pick<Measurements, "bust" | "wa
   },
 };
 
+const DEFAULT_SHAPE: ShapeProfile = { shoulder: 100, waist: 100, hip: 100, hem: 100, length: 100 };
+
+function clamp(value: number, minimum: number, maximum: number) {
+  return Math.min(maximum, Math.max(minimum, value));
+}
+
+function median(values: number[]) {
+  if (!values.length) return 0;
+  const sorted = [...values].sort((a, b) => a - b);
+  const middle = Math.floor(sorted.length / 2);
+  return sorted.length % 2 ? sorted[middle] : (sorted[middle - 1] + sorted[middle]) / 2;
+}
+
+async function analyzeSilhouette(url: string, sourceName: string): Promise<ShapeAnalysis> {
+  const image = new Image();
+  image.src = url;
+  await image.decode();
+  const scale = Math.min(1, 420 / image.naturalWidth, 560 / image.naturalHeight);
+  const width = Math.max(80, Math.round(image.naturalWidth * scale));
+  const height = Math.max(100, Math.round(image.naturalHeight * scale));
+  const canvas = document.createElement("canvas");
+  canvas.width = width;
+  canvas.height = height;
+  const context = canvas.getContext("2d", { willReadFrequently: true });
+  if (!context) throw new Error("Canvas unavailable");
+  context.drawImage(image, 0, 0, width, height);
+  const pixels = context.getImageData(0, 0, width, height);
+  const patch = Math.max(4, Math.round(Math.min(width, height) * .035));
+  const corners = [[0, 0], [width - patch, 0], [0, height - patch], [width - patch, height - patch]];
+  let red = 0; let green = 0; let blue = 0; let samples = 0;
+  for (const [startX, startY] of corners) {
+    for (let y = startY; y < startY + patch; y += 1) {
+      for (let x = startX; x < startX + patch; x += 1) {
+        const offset = (y * width + x) * 4;
+        red += pixels.data[offset]; green += pixels.data[offset + 1]; blue += pixels.data[offset + 2]; samples += 1;
+      }
+    }
+  }
+  red /= samples; green /= samples; blue /= samples;
+  let cornerVariation = 0;
+  for (const [startX, startY] of corners) {
+    for (let y = startY; y < startY + patch; y += 2) {
+      for (let x = startX; x < startX + patch; x += 2) {
+        const offset = (y * width + x) * 4;
+        cornerVariation += Math.hypot(pixels.data[offset] - red, pixels.data[offset + 1] - green, pixels.data[offset + 2] - blue);
+      }
+    }
+  }
+  cornerVariation /= Math.max(1, samples / 4);
+  const threshold = clamp(25 + cornerVariation * 1.8, 28, 96);
+  const leftEdges = new Array<number>(height).fill(-1);
+  const rightEdges = new Array<number>(height).fill(-1);
+  let foregroundPixels = 0;
+  let contrastSum = 0;
+
+  for (let y = 0; y < height; y += 1) {
+    const segments: { left: number; right: number; contrast: number }[] = [];
+    let segmentStart = -1; let segmentContrast = 0;
+    for (let x = 0; x <= width; x += 1) {
+      let foreground = false; let distance = 0;
+      if (x < width) {
+        const offset = (y * width + x) * 4;
+        distance = Math.hypot(pixels.data[offset] - red, pixels.data[offset + 1] - green, pixels.data[offset + 2] - blue);
+        foreground = pixels.data[offset + 3] > 20 && distance > threshold;
+      }
+      if (foreground && segmentStart < 0) segmentStart = x;
+      if (foreground) segmentContrast += distance;
+      if (!foreground && segmentStart >= 0) {
+        if (x - segmentStart >= Math.max(3, width * .015)) segments.push({ left: segmentStart, right: x - 1, contrast: segmentContrast });
+        segmentStart = -1; segmentContrast = 0;
+      }
+    }
+    const centre = width / 2;
+    const best = segments.sort((a, b) => {
+      const scoreA = (a.right - a.left) - Math.abs((a.left + a.right) / 2 - centre) * .35;
+      const scoreB = (b.right - b.left) - Math.abs((b.left + b.right) / 2 - centre) * .35;
+      return scoreB - scoreA;
+    })[0];
+    if (best) {
+      leftEdges[y] = best.left; rightEdges[y] = best.right;
+      foregroundPixels += best.right - best.left + 1;
+      contrastSum += best.contrast;
+    }
+  }
+
+  const validRows = leftEdges.map((left, index) => left >= 0 && rightEdges[index] > left ? index : -1).filter((row) => row >= 0);
+  if (validRows.length < height * .18) throw new Error("No coherent silhouette");
+  const top = validRows[0];
+  const bottom = validRows[validRows.length - 1];
+  const span = Math.max(1, bottom - top);
+  const widthAt = (position: number) => {
+    const target = top + span * position;
+    const band = Math.max(2, Math.round(span * .025));
+    const values: number[] = [];
+    for (let y = Math.max(top, Math.round(target - band)); y <= Math.min(bottom, Math.round(target + band)); y += 1) {
+      if (leftEdges[y] >= 0) values.push(rightEdges[y] - leftEdges[y] + 1);
+    }
+    return median(values);
+  };
+  const shoulderWidth = widthAt(.14);
+  const chestWidth = Math.max(1, widthAt(.29));
+  const waistWidth = widthAt(.48);
+  const hipWidth = widthAt(.65);
+  const hemWidth = widthAt(.94);
+  const ratios: ShapeProfile = {
+    shoulder: Math.round(clamp((shoulderWidth / chestWidth) / .86 * 100, 72, 132)),
+    waist: Math.round(clamp((waistWidth / chestWidth) / .78 * 100, 68, 138)),
+    hip: Math.round(clamp((hipWidth / chestWidth) / 1.02 * 100, 72, 138)),
+    hem: Math.round(clamp((hemWidth / chestWidth) / 1.02 * 100, 65, 155)),
+    length: 100,
+  };
+  const coverage = foregroundPixels / (width * height);
+  const validRowRatio = validRows.length / height;
+  const averageContrast = contrastSum / Math.max(1, foregroundPixels);
+  const coveragePenalty = coverage < .06 || coverage > .78 ? 18 : 0;
+  const score = Math.round(clamp(28 + validRowRatio * 34 + Math.min(24, (averageContrast - threshold) * .28) - coveragePenalty, 25, 92));
+
+  const preview = document.createElement("canvas");
+  preview.width = width; preview.height = height;
+  const previewContext = preview.getContext("2d");
+  if (!previewContext) throw new Error("Canvas unavailable");
+  previewContext.fillStyle = "#fffdf9"; previewContext.fillRect(0, 0, width, height);
+  previewContext.globalAlpha = .24; previewContext.drawImage(image, 0, 0, width, height); previewContext.globalAlpha = 1;
+  previewContext.fillStyle = "rgba(91,59,104,.72)";
+  for (let y = top; y <= bottom; y += 1) if (leftEdges[y] >= 0) previewContext.fillRect(leftEdges[y], y, rightEdges[y] - leftEdges[y] + 1, 1);
+  previewContext.strokeStyle = "#251f2b"; previewContext.lineWidth = Math.max(1, width / 220);
+  previewContext.beginPath();
+  for (let y = top; y <= bottom; y += 1) if (leftEdges[y] >= 0) previewContext.lineTo(leftEdges[y], y);
+  for (let y = bottom; y >= top; y -= 1) if (rightEdges[y] >= 0) previewContext.lineTo(rightEdges[y], y);
+  previewContext.closePath(); previewContext.stroke();
+  return { sourceName, previewUrl: preview.toDataURL("image/png"), score, foregroundCoverage: coverage, ratios };
+}
+
 const en = {
   back: "Back to mode selection",
   eyebrow: "Create from visual references",
-  title: "Build a preliminary pattern from images and measurements.",
-  intro: "Upload photos, a sketch or a drawing, describe the garment and enter body measurements. PatternShift turns those confirmed inputs into a transparent base draft.",
+  title: "Reconstruct a checkable pattern from images and measurements.",
+  intro: "Upload photos, a sketch or a drawing. PatternShift analyzes the visible contour, lets you correct the detected proportions and builds measurable pattern pieces from the confirmed result.",
   local: "Reference images stay in this browser",
-  prototype: "Guided prototype",
+  prototype: "Contour-assisted workflow",
   honestyTitle: "What this release does",
-  honesty: "Images are used as visual references. The current release does not secretly invent hidden seams or perform full AI reconstruction; it combines your answers and measurements into a preliminary parametric pattern.",
+  honesty: "The browser now analyzes the visible silhouette and uses it in the pattern geometry. Hidden seams and fabric behaviour still cannot be proven from pixels, so every detected proportion remains editable and every assumption is reported.",
   stepReference: "References",
   stepDesign: "Garment",
   stepMeasures: "Measurements",
@@ -86,6 +234,11 @@ const en = {
   formats: "PNG, JPG or WebP · up to 4 images · 10 MB each",
   invalid: "Use PNG, JPG or WebP images smaller than 10 MB.",
   remove: "Remove reference image",
+  viewRole: "Image view",
+  frontView: "Front",
+  backView: "Back",
+  sideView: "Side",
+  detailView: "Detail",
   coverageTitle: "Which views do you have?",
   coverageFront: "Front only",
   coverageFrontDesc: "Back and side details will be assumptions.",
@@ -93,7 +246,24 @@ const en = {
   coverageBackDesc: "Main construction is visible from both sides.",
   coverageMulti: "Front + back + side",
   coverageMultiDesc: "Best current input for silhouette and depth.",
-  nextDesign: "Describe the garment",
+  nextDesign: "Analyze silhouette and continue",
+  analyzing: "Analyzing the visible contour locally…",
+  analysisFailed: "The automatic contour was not reliable. You can still set the proportions manually in the next step.",
+  analysisTitle: "Detected silhouette",
+  analysisDesc: "The purple area is the foreground contour separated from the corner background colours. Check it before using the detected proportions.",
+  detectedContour: "Contour preview",
+  pixelCoverage: "Foreground coverage",
+  correctionTitle: "Correct the detected proportions",
+  correctionDesc: "Move a control only when the contour includes a pose, loose fold, shadow or background object. The values change the generated pattern, not the body measurements.",
+  shoulderShape: "Shoulder line",
+  waistShape: "Waist shaping",
+  hipShape: "Hip shaping",
+  hemShape: "Hem width",
+  lengthShape: "Vertical proportion",
+  resetDetection: "Reset from contour",
+  narrower: "narrower",
+  neutral: "detected",
+  wider: "wider",
   designTitle: "Describe what the images show",
     designDesc: "These choices tell the generator what to construct, so it does not have to infer a fold or shadow.",
   garmentType: "Garment type",
@@ -134,8 +304,14 @@ const en = {
   garmentLength: "Finished garment length",
   ease: "Design ease",
   easeHelp: "Extra room added to the body measurements.",
+  constructionTitle: "Construction controls",
+  seamAllowanceLabel: "Seam allowance",
+  dartMode: "Dart construction",
+  dartNone: "No darts",
+  dartWaist: "Waist darts",
+  dartBustWaist: "Bust + waist darts",
   confirm: "I understand that hidden seams, darts, lining and fasteners must be checked manually.",
-  generate: "Generate preliminary pattern",
+  generate: "Generate and check pattern",
   referenceSummary: "Reference quality",
   confidence: "Draft confidence",
   images: "images",
@@ -143,8 +319,25 @@ const en = {
   assumed: "Needs confirmation",
   visibleItems: ["Uploaded views", "Selected garment category", "Entered body measurements"],
   assumedItems: ["Hidden seams and darts", "Exact fabric behaviour", "Lining and internal construction"],
-  resultTitle: "Your preliminary base pattern",
-  resultDesc: "The generated SVG contains front and back pieces, grainlines, labels, a 10 cm control square and a stated seam allowance. Review it before resizing or cutting.",
+  resultTitle: "Your analyzed pattern draft",
+  resultDesc: "The SVG now combines the detected contour, your corrections, body measurements, construction choices, grainlines, notches, darts and a 10 cm control square.",
+  checksTitle: "Construction checks",
+  checksDesc: "Passed checks are guaranteed by the generated geometry. Review items depend on information that a photograph cannot prove.",
+  passed: "Passed",
+  review: "Review",
+  checkSideSeams: "Front and back side seams",
+  checkSideDetail: "Generated from the same verified vertical construction length.",
+  checkWaistSegments: "Waist seam segments",
+  checkWaistDetail: "Front and back waist positions share the entered back-waist length.",
+  checkControlSquare: "Print calibration",
+  checkControlDetail: "A 10 cm control square is embedded in the SVG.",
+  checkSleeveCap: "Sleeve cap and armhole",
+  checkSleeveDetail: "Measure the printed seam lines before cutting; photo contour cannot prove sleeve mobility.",
+  checkImageAnalysis: "Image contour quality",
+  checkAnalysisDetail: "Automatic contour quality should be at least 65% or corrected manually.",
+  checkAllowance: "Seam allowance range",
+  checkAllowanceDetail: "The selected allowance should normally stay between 0.6 and 2.5 cm.",
+  editSettings: "Edit construction",
   download: "Download preliminary SVG",
   openResize: "Open in resize studio",
   startOver: "Start over",
@@ -154,7 +347,7 @@ const en = {
   sleevePiece: "SLEEVE",
   grainline: "GRAINLINE",
   controlSquare: "10 cm CONTROL",
-    seamAllowance: "1.2 cm seam allowance reference",
+  seamAllowance: "Seam allowance",
   low: "More views are recommended",
   medium: "Useful starting point",
   high: "Strong reference set",
@@ -167,12 +360,12 @@ const copy: Record<Language, CreateCopy> = {
   ru: {
     back: "Назад к выбору режима",
     eyebrow: "Создание по визуальным ориентирам",
-    title: "Создайте предварительную выкройку по изображениям и меркам.",
-    intro: "Загрузите фотографии, эскиз или рисунок, опишите изделие и укажите мерки. PatternShift превратит подтверждённые данные в понятную базовую выкройку.",
+    title: "Восстановите проверяемую выкройку по изображениям и меркам.",
+    intro: "Загрузите фотографии, эскиз или рисунок. PatternShift проанализирует видимый контур, позволит исправить распознанные пропорции и построит измеряемые детали выкройки.",
     local: "Изображения остаются в этом браузере",
-    prototype: "Пошаговый прототип",
+    prototype: "Режим с анализом контура",
     honestyTitle: "Что умеет эта версия",
-    honesty: "Изображения используются как визуальные ориентиры. Текущая версия не придумывает скрытые швы и пока не выполняет полную AI-реконструкцию; она объединяет ваши ответы и мерки в предварительную параметрическую выкройку.",
+    honesty: "Браузер анализирует видимый силуэт и использует его в геометрии выкройки. Скрытые швы и поведение ткани нельзя доказать по пикселям, поэтому все пропорции можно исправить, а каждое предположение показывается отдельно.",
     stepReference: "Изображения",
     stepDesign: "Изделие",
     stepMeasures: "Мерки",
@@ -183,6 +376,11 @@ const copy: Record<Language, CreateCopy> = {
     formats: "PNG, JPG или WebP · до 4 изображений · по 10 МБ",
     invalid: "Используйте PNG, JPG или WebP размером меньше 10 МБ.",
     remove: "Удалить изображение",
+    viewRole: "Вид изображения",
+    frontView: "Спереди",
+    backView: "Сзади",
+    sideView: "Сбоку",
+    detailView: "Деталь",
     coverageTitle: "Какие виды у вас есть?",
     coverageFront: "Только спереди",
     coverageFrontDesc: "Задняя и боковая части будут предположениями.",
@@ -190,7 +388,24 @@ const copy: Record<Language, CreateCopy> = {
     coverageBackDesc: "Основная конструкция видна с двух сторон.",
     coverageMulti: "Спереди, сзади и сбоку",
     coverageMultiDesc: "Лучший вариант для силуэта и объёма.",
-    nextDesign: "Описать изделие",
+    nextDesign: "Проанализировать силуэт",
+    analyzing: "Видимый контур анализируется локально…",
+    analysisFailed: "Автоматический контур получился ненадёжным. В следующем шаге пропорции всё равно можно задать вручную.",
+    analysisTitle: "Распознанный силуэт",
+    analysisDesc: "Фиолетовая область — передний план, отделённый от цветов фона по углам изображения. Проверьте её перед использованием пропорций.",
+    detectedContour: "Предпросмотр контура",
+    pixelCoverage: "Заполнение изображения",
+    correctionTitle: "Исправьте распознанные пропорции",
+    correctionDesc: "Меняйте параметр, только если в контур попали поза, свободная складка, тень или объект фона. Эти значения изменяют выкройку, а не мерки тела.",
+    shoulderShape: "Линия плеч",
+    waistShape: "Приталивание",
+    hipShape: "Линия бёдер",
+    hemShape: "Ширина низа",
+    lengthShape: "Вертикальная пропорция",
+    resetDetection: "Вернуть распознавание",
+    narrower: "уже",
+    neutral: "распознано",
+    wider: "шире",
     designTitle: "Опишите, что видно на изображениях",
     designDesc: "Эти параметры прямо задают конструкцию, поэтому программе не приходится угадывать по складке или тени.",
     garmentType: "Тип изделия",
@@ -231,8 +446,14 @@ const copy: Record<Language, CreateCopy> = {
     garmentLength: "Длина готового изделия",
     ease: "Прибавка на свободу",
     easeHelp: "Дополнительный объём к меркам тела.",
+    constructionTitle: "Параметры конструкции",
+    seamAllowanceLabel: "Припуск на шов",
+    dartMode: "Конструкция вытачек",
+    dartNone: "Без вытачек",
+    dartWaist: "Талиевые вытачки",
+    dartBustWaist: "Нагрудные и талиевые",
     confirm: "Я понимаю, что скрытые швы, вытачки, подкладку и застёжки нужно проверить вручную.",
-    generate: "Создать предварительную выкройку",
+    generate: "Создать и проверить выкройку",
     referenceSummary: "Качество исходных данных",
     confidence: "Уверенность эскиза",
     images: "изображений",
@@ -240,8 +461,25 @@ const copy: Record<Language, CreateCopy> = {
     assumed: "Нужно подтвердить",
     visibleItems: ["Загруженные виды", "Выбранный тип изделия", "Введённые мерки тела"],
     assumedItems: ["Скрытые швы и вытачки", "Точное поведение ткани", "Подкладка и внутренняя конструкция"],
-    resultTitle: "Ваша предварительная базовая выкройка",
-    resultDesc: "SVG содержит детали переда и спинки, долевые линии, подписи, контрольный квадрат 10 см и указанный припуск. Проверьте его перед изменением размера или раскроем.",
+    resultTitle: "Ваша выкройка на основе анализа",
+    resultDesc: "SVG объединяет распознанный контур, ваши исправления, мерки тела, конструктивные параметры, долевые линии, надсечки, вытачки и контрольный квадрат 10 см.",
+    checksTitle: "Проверка конструкции",
+    checksDesc: "Пройденные проверки обеспечиваются геометрией генератора. Пункты для проверки зависят от данных, которые фотография не может подтвердить.",
+    passed: "Пройдено",
+    review: "Проверить",
+    checkSideSeams: "Боковые швы переда и спинки",
+    checkSideDetail: "Построены по одной проверенной вертикальной длине конструкции.",
+    checkWaistSegments: "Сегменты линии талии",
+    checkWaistDetail: "Перед и спинка используют введённую длину спины до талии.",
+    checkControlSquare: "Калибровка печати",
+    checkControlDetail: "В SVG встроен контрольный квадрат 10 см.",
+    checkSleeveCap: "Окат рукава и пройма",
+    checkSleeveDetail: "Измерьте линии швов после печати: контур фотографии не подтверждает подвижность рукава.",
+    checkImageAnalysis: "Качество анализа изображения",
+    checkAnalysisDetail: "Качество автоматического контура должно быть не ниже 65% либо пропорции нужно исправить вручную.",
+    checkAllowance: "Диапазон припуска",
+    checkAllowanceDetail: "Обычно выбранный припуск должен находиться между 0,6 и 2,5 см.",
+    editSettings: "Изменить конструкцию",
     download: "Скачать предварительный SVG",
     openResize: "Открыть в редакторе размеров",
     startOver: "Начать заново",
@@ -251,7 +489,7 @@ const copy: Record<Language, CreateCopy> = {
     sleevePiece: "РУКАВ",
     grainline: "ДОЛЕВАЯ ЛИНИЯ",
     controlSquare: "КОНТРОЛЬ 10 см",
-    seamAllowance: "Ориентир припуска: 1,2 см",
+    seamAllowance: "Припуск на шов",
     low: "Рекомендуются дополнительные виды",
     medium: "Полезная отправная точка",
     high: "Хороший комплект изображений",
@@ -259,12 +497,12 @@ const copy: Record<Language, CreateCopy> = {
   fi: {
     back: "Takaisin tilan valintaan",
     eyebrow: "Luo visuaalisista viitteistä",
-    title: "Luo alustava kaava kuvista ja mitoista.",
-    intro: "Lataa valokuvia, luonnos tai piirros, kuvaile vaate ja syötä vartalon mitat. PatternShift muuttaa vahvistetut tiedot läpinäkyväksi peruskaavaksi.",
+    title: "Rekonstruoi tarkistettava kaava kuvista ja mitoista.",
+    intro: "Lataa valokuvia, luonnos tai piirros. PatternShift analysoi näkyvän ääriviivan, antaa korjata tunnistetut suhteet ja rakentaa mitattavat kaavakappaleet.",
     local: "Viitekuvat pysyvät tässä selaimessa",
-    prototype: "Ohjattu prototyyppi",
+    prototype: "Ääriviiva-avusteinen työnkulku",
     honestyTitle: "Mitä tämä versio tekee",
-    honesty: "Kuvia käytetään visuaalisina viitteinä. Nykyinen versio ei keksi piilosaumoja eikä vielä tee täydellistä AI-rekonstruktiota; se yhdistää vastauksesi ja mittasi alustavaksi parametrikaavaksi.",
+    honesty: "Selain analysoi näkyvän siluetin ja käyttää sitä kaavan geometriassa. Piilosaumoja tai kankaan käyttäytymistä ei voi todistaa pikseleistä, joten kaikkia suhteita voi korjata ja oletukset näytetään erikseen.",
     stepReference: "Viitteet",
     stepDesign: "Vaate",
     stepMeasures: "Mitat",
@@ -275,6 +513,11 @@ const copy: Record<Language, CreateCopy> = {
     formats: "PNG, JPG tai WebP · enintään 4 kuvaa · 10 Mt kukin",
     invalid: "Käytä alle 10 Mt:n PNG-, JPG- tai WebP-kuvia.",
     remove: "Poista viitekuva",
+    viewRole: "Kuvan näkymä",
+    frontView: "Edestä",
+    backView: "Takaa",
+    sideView: "Sivulta",
+    detailView: "Yksityiskohta",
     coverageTitle: "Mitkä näkymät sinulla on?",
     coverageFront: "Vain edestä",
     coverageFrontDesc: "Taka- ja sivutiedot jäävät oletuksiksi.",
@@ -282,7 +525,24 @@ const copy: Record<Language, CreateCopy> = {
     coverageBackDesc: "Päärakenne näkyy molemmilta puolilta.",
     coverageMulti: "Etu-, taka- ja sivukuva",
     coverageMultiDesc: "Paras nykyinen aineisto siluetille ja syvyydelle.",
-    nextDesign: "Kuvaile vaate",
+    nextDesign: "Analysoi siluetti",
+    analyzing: "Näkyvää ääriviivaa analysoidaan paikallisesti…",
+    analysisFailed: "Automaattinen ääriviiva ei ollut luotettava. Voit silti asettaa suhteet käsin seuraavassa vaiheessa.",
+    analysisTitle: "Tunnistettu siluetti",
+    analysisDesc: "Violetti alue on etuala, joka erotettiin kuvan kulmien taustaväreistä. Tarkista se ennen suhteiden käyttöä.",
+    detectedContour: "Ääriviivan esikatselu",
+    pixelCoverage: "Etualan peitto",
+    correctionTitle: "Korjaa tunnistetut suhteet",
+    correctionDesc: "Muuta säädintä vain, jos ääriviivaan sisältyy asento, väljä laskos, varjo tai taustaesine. Arvot muuttavat kaavaa, eivät vartalon mittoja.",
+    shoulderShape: "Hartialinja",
+    waistShape: "Vyötärön muotoilu",
+    hipShape: "Lantion muotoilu",
+    hemShape: "Helman leveys",
+    lengthShape: "Pystysuhde",
+    resetDetection: "Palauta tunnistus",
+    narrower: "kapeampi",
+    neutral: "tunnistettu",
+    wider: "leveämpi",
     designTitle: "Kuvaile, mitä kuvissa näkyy",
     designDesc: "Valinnat kertovat suoraan, mitä rakennetaan, joten ohjelman ei tarvitse päätellä sitä laskoksesta tai varjosta.",
     garmentType: "Vaatteen tyyppi",
@@ -323,8 +583,14 @@ const copy: Record<Language, CreateCopy> = {
     garmentLength: "Valmiin vaatteen pituus",
     ease: "Väljyysvara",
     easeHelp: "Vartalon mittoihin lisättävä liikkumavara.",
+    constructionTitle: "Rakenteen säädöt",
+    seamAllowanceLabel: "Saumanvara",
+    dartMode: "Muotolaskokset",
+    dartNone: "Ei muotolaskoksia",
+    dartWaist: "Vyötärömuotolaskokset",
+    dartBustWaist: "Rinta- ja vyötärömuotolaskokset",
     confirm: "Ymmärrän, että piilosaumat, muotolaskokset, vuori ja kiinnikkeet on tarkistettava käsin.",
-    generate: "Luo alustava kaava",
+    generate: "Luo ja tarkista kaava",
     referenceSummary: "Viiteaineiston laatu",
     confidence: "Luonnoksen luottamus",
     images: "kuvaa",
@@ -332,8 +598,25 @@ const copy: Record<Language, CreateCopy> = {
     assumed: "Vahvistettava",
     visibleItems: ["Ladatut näkymät", "Valittu vaateryhmä", "Syötetyt vartalon mitat"],
     assumedItems: ["Piilosaumat ja muotolaskokset", "Kankaan tarkka käyttäytyminen", "Vuori ja sisärakenne"],
-    resultTitle: "Alustava peruskaavasi",
-    resultDesc: "SVG sisältää etu- ja takakappaleet, langansuunnat, merkinnät, 10 cm:n tarkistusruudun ja ilmoitetun saumanvaran. Tarkista se ennen koon muuttamista tai leikkaamista.",
+    resultTitle: "Analyysiin perustuva kaavasi",
+    resultDesc: "SVG yhdistää tunnistetun ääriviivan, korjauksesi, vartalon mitat, rakennevalinnat, langansuunnat, hakit, muotolaskokset ja 10 cm:n tarkistusruudun.",
+    checksTitle: "Rakenteen tarkistukset",
+    checksDesc: "Läpäistyt tarkistukset taataan luodulla geometrialla. Tarkistettavat kohdat riippuvat tiedoista, joita valokuva ei voi todistaa.",
+    passed: "Läpäisty",
+    review: "Tarkista",
+    checkSideSeams: "Etu- ja takakappaleen sivusaumat",
+    checkSideDetail: "Luotu samasta vahvistetusta pystysuuntaisesta rakennepituudesta.",
+    checkWaistSegments: "Vyötärösauman osat",
+    checkWaistDetail: "Etu- ja takakappale käyttävät syötettyä selän vyötäröpituutta.",
+    checkControlSquare: "Tulostuksen kalibrointi",
+    checkControlDetail: "SVG sisältää 10 cm:n tarkistusruudun.",
+    checkSleeveCap: "Hihan pyöriö ja kädentie",
+    checkSleeveDetail: "Mittaa tulostetut saumalinjat ennen leikkaamista; valokuvan ääriviiva ei todista hihan liikkuvuutta.",
+    checkImageAnalysis: "Kuva-analyysin laatu",
+    checkAnalysisDetail: "Automaattisen ääriviivan laadun tulee olla vähintään 65 % tai suhteet on korjattava käsin.",
+    checkAllowance: "Saumanvaran alue",
+    checkAllowanceDetail: "Valitun saumanvaran tulisi yleensä olla 0,6–2,5 cm.",
+    editSettings: "Muokkaa rakennetta",
     download: "Lataa alustava SVG",
     openResize: "Avaa koonmuutosstudiossa",
     startOver: "Aloita alusta",
@@ -343,7 +626,7 @@ const copy: Record<Language, CreateCopy> = {
     sleevePiece: "HIHA",
     grainline: "LANGANSUUNTA",
     controlSquare: "10 cm TARKISTUS",
-    seamAllowance: "Saumanvaran viite: 1,2 cm",
+    seamAllowance: "Saumanvara",
     low: "Lisänäkymiä suositellaan",
     medium: "Hyödyllinen lähtökohta",
     high: "Vahva viiteaineisto",
@@ -358,13 +641,16 @@ function generatePatternSvg(
   closure: string,
   measurements: Measurements,
   ease: number,
+  shapeProfile: ShapeProfile,
+  seamAllowance: number,
+  dartMode: DartMode,
   labels: Pick<CreateCopy, "draftLabel" | "frontPiece" | "backPiece" | "sleevePiece" | "grainline" | "controlSquare" | "seamAllowance">,
 ) {
-  const seam = 12;
+  const seam = seamAllowance * 10;
   const quarterBust = ((measurements.bust + ease) * 10) / 4;
-  const quarterWaist = ((measurements.waist + ease * 0.7) * 10) / 4;
-  const quarterHip = ((measurements.hips + ease) * 10) / 4;
-  const garmentHeight = Math.max(380, measurements.garmentLength * 10);
+  const quarterWaist = ((measurements.waist + ease * 0.7) * 10) / 4 * shapeProfile.waist / 100;
+  const quarterHip = ((measurements.hips + ease) * 10) / 4 * shapeProfile.hip / 100;
+  const garmentHeight = Math.max(380, measurements.garmentLength * 10 * shapeProfile.length / 100);
   const pieceGap = 70;
   const margin = 60;
   const line = "#332a37";
@@ -380,7 +666,7 @@ function generatePatternSvg(
 
   if (garment === "dress" || garment === "top") {
     const hemBase = garment === "dress" ? quarterHip : quarterWaist;
-    const hemWidth = silhouette === "aline" ? hemBase * 1.25 : silhouette === "straight" ? Math.max(quarterHip, quarterWaist) : hemBase;
+    const hemWidth = (silhouette === "aline" ? hemBase * 1.25 : silhouette === "straight" ? Math.max(quarterHip, quarterWaist) : hemBase) * shapeProfile.hem / 100;
     const pieceWidth = Math.max(quarterBust, quarterWaist, hemWidth) + seam * 2;
     const neckWidth = Math.min(95, measurements.shoulder * 2.1);
     const armDepth = Math.max(175, measurements.bust * 2.25);
@@ -395,9 +681,21 @@ function generatePatternSvg(
         : front && neckline === "square"
           ? `L ${x + neckWidth * .18} ${topY + neckDepth} L ${x + neckWidth} ${topY + neckDepth} L ${x + neckWidth} ${topY + 4}`
           : `Q ${x + neckWidth * .45} ${topY - 8} ${x + neckWidth} ${topY + 4}`;
-      return `M ${x} ${topY + neckDepth} ${neckShape} L ${x + measurements.shoulder * 5.1} ${topY + 25} Q ${x + pieceWidth + 10} ${topY + armDepth * .55} ${x + quarterBust + seam} ${topY + armDepth} L ${x + quarterWaist + seam} ${topY + Math.min(bodyHeight * .46, measurements.backLength * 10)} L ${x + hemWidth + seam} ${topY + bodyHeight} L ${x} ${topY + bodyHeight} Z`;
+      return `M ${x} ${topY + neckDepth} ${neckShape} L ${x + measurements.shoulder * 5.1 * shapeProfile.shoulder / 100} ${topY + 25} Q ${x + pieceWidth + 10} ${topY + armDepth * .55} ${x + quarterBust + seam} ${topY + armDepth} L ${x + quarterWaist + seam} ${topY + Math.min(bodyHeight * .46, measurements.backLength * 10)} L ${x + hemWidth + seam} ${topY + bodyHeight} L ${x} ${topY + bodyHeight} Z`;
     };
     pieces += `<path d="${bodyPath(xFront, true)}"/><path d="${bodyPath(xBack, false)}"/>`;
+    const waistY = topY + Math.min(bodyHeight * .46, measurements.backLength * 10);
+    if (dartMode !== "none") {
+      const dartLength = Math.min(155, bodyHeight * .22);
+      const frontDartX = xFront + quarterWaist * .52;
+      const backDartX = xBack + quarterWaist * .56;
+      pieces += `<path d="M ${frontDartX - 14} ${waistY} L ${frontDartX} ${waistY - dartLength} L ${frontDartX + 14} ${waistY}"/><path d="M ${backDartX - 13} ${waistY} L ${backDartX} ${waistY - dartLength * .82} L ${backDartX + 13} ${waistY}"/>`;
+    }
+    if (dartMode === "bustWaist") {
+      const bustDartY = topY + armDepth * .74;
+      pieces += `<path d="M ${xFront + quarterBust + seam} ${bustDartY - 18} L ${xFront + quarterBust * .64} ${bustDartY + 24} L ${xFront + quarterBust + seam} ${bustDartY + 18}"/>`;
+    }
+    pieces += `<path d="M ${xFront + quarterWaist + seam - 8} ${waistY - 10} L ${xFront + quarterWaist + seam + 10} ${waistY} L ${xFront + quarterWaist + seam - 8} ${waistY + 10}"/><path d="M ${xBack + quarterWaist + seam - 8} ${waistY - 10} L ${xBack + quarterWaist + seam + 10} ${waistY} L ${xBack + quarterWaist + seam - 8} ${waistY + 10}"/>`;
     if (closure === "front") pieces += `<line x1="${xFront + 8}" y1="${topY + 105}" x2="${xFront + 8}" y2="${topY + Math.min(bodyHeight, 520)}" stroke-dasharray="12 9"/>`;
     if (closure === "back") pieces += `<line x1="${xBack + 8}" y1="${topY + 55}" x2="${xBack + 8}" y2="${topY + Math.min(bodyHeight, 520)}" stroke-dasharray="12 9"/>`;
     if (closure === "side") pieces += `<line x1="${xFront + quarterBust + seam - 5}" y1="${topY + armDepth}" x2="${xFront + quarterWaist + seam - 5}" y2="${topY + Math.min(bodyHeight * .58, 540)}" stroke-dasharray="12 9"/>`;
@@ -418,13 +716,17 @@ function generatePatternSvg(
   } else if (garment === "skirt") {
     const waistWidth = quarterWaist + seam * 2;
     const hipWidth = quarterHip + seam * 2;
-    const hemWidth = silhouette === "aline" ? hipWidth * 1.3 : silhouette === "fitted" ? hipWidth * .96 : hipWidth;
+    const hemWidth = (silhouette === "aline" ? hipWidth * 1.3 : silhouette === "fitted" ? hipWidth * .96 : hipWidth) * shapeProfile.hem / 100;
     const pieceWidth = Math.max(hipWidth, hemWidth);
     const xFront = margin;
     const xBack = xFront + pieceWidth + pieceGap;
     const y = 100;
     const path = (x: number) => `M ${x} ${y} L ${x + waistWidth} ${y} Q ${x + hipWidth + 14} ${y + 170} ${x + hipWidth} ${y + 230} L ${x + hemWidth} ${y + garmentHeight} L ${x} ${y + garmentHeight} Z`;
     pieces += `<path d="${path(xFront)}"/><path d="${path(xBack)}"/>`;
+    if (dartMode !== "none") {
+      pieces += `<path d="M ${xFront + waistWidth * .45 - 13} ${y} L ${xFront + waistWidth * .45} ${y + 135} L ${xFront + waistWidth * .45 + 13} ${y}"/><path d="M ${xBack + waistWidth * .5 - 13} ${y} L ${xBack + waistWidth * .5} ${y + 120} L ${xBack + waistWidth * .5 + 13} ${y}"/>`;
+    }
+    pieces += `<path d="M ${xFront + hipWidth - 7} ${y + 220} L ${xFront + hipWidth + 11} ${y + 230} L ${xFront + hipWidth - 7} ${y + 240}"/><path d="M ${xBack + hipWidth - 7} ${y + 220} L ${xBack + hipWidth + 11} ${y + 230} L ${xBack + hipWidth - 7} ${y + 240}"/>`;
     pieces += labelBlock(xFront + pieceWidth * .43, y + 170, labels.frontPiece, Math.min(360, garmentHeight * .48));
     pieces += labelBlock(xBack + pieceWidth * .43, y + 170, labels.backPiece, Math.min(360, garmentHeight * .48));
     canvasWidth = xBack + pieceWidth + margin;
@@ -440,6 +742,8 @@ function generatePatternSvg(
       return `M ${x} ${y} L ${x + hipWidth} ${y} L ${x + hipWidth + extension} ${y + 250} L ${x + legWidth} ${y + garmentHeight} L ${x + 25} ${y + garmentHeight} L ${x + hipWidth * .28} ${y + 280} Z`;
     };
     pieces += `<path d="${trouserPath(xFront, false)}"/><path d="${trouserPath(xBack, true)}"/>`;
+    if (dartMode !== "none") pieces += `<path d="M ${xBack + hipWidth * .5 - 13} ${y} L ${xBack + hipWidth * .5} ${y + 125} L ${xBack + hipWidth * .5 + 13} ${y}"/>`;
+    pieces += `<path d="M ${xFront + hipWidth - 8} ${y + 238} L ${xFront + hipWidth + 10} ${y + 250} L ${xFront + hipWidth - 8} ${y + 262}"/><path d="M ${xBack + hipWidth - 8} ${y + 238} L ${xBack + hipWidth + 10} ${y + 250} L ${xBack + hipWidth - 8} ${y + 262}"/>`;
     pieces += labelBlock(xFront + hipWidth * .42, y + 210, labels.frontPiece, Math.min(420, garmentHeight * .5));
     pieces += labelBlock(xBack + hipWidth * .42, y + 210, labels.backPiece, Math.min(420, garmentHeight * .5));
     canvasWidth = xBack + hipWidth + crotch * 1.5 + margin;
@@ -453,7 +757,7 @@ function generatePatternSvg(
   <text x="60" y="45" font-family="Arial,sans-serif" font-size="22" font-weight="700" fill="#8b4f42">${labels.draftLabel}</text>
   <g fill="none" stroke="${line}" stroke-width="3.2" stroke-linejoin="round">${pieces}</g>
   <g transform="translate(${canvasWidth - 190} ${canvasHeight - 190})"><rect width="100" height="100" fill="none" stroke="${line}" stroke-width="3"/><text x="0" y="125" font-family="Arial,sans-serif" font-size="15" fill="${line}">${labels.controlSquare}</text></g>
-  <text x="60" y="${canvasHeight - 55}" font-family="Arial,sans-serif" font-size="16" fill="${guide}">${labels.seamAllowance}</text>
+  <text x="60" y="${canvasHeight - 55}" font-family="Arial,sans-serif" font-size="16" fill="${guide}">${labels.seamAllowance}: ${seamAllowance.toFixed(1)} cm</text>
   </svg>`;
 }
 
@@ -473,13 +777,22 @@ export default function CreateFromImages() {
   const [size, setSize] = useState<Size>("M");
   const [measurements, setMeasurements] = useState<Measurements>({ bust: 92, waist: 74, hips: 100, shoulder: 38, backLength: 42, garmentLength: 105 });
   const [ease, setEase] = useState(4);
+  const [analysis, setAnalysis] = useState<ShapeAnalysis | null>(null);
+  const [analyzing, setAnalyzing] = useState(false);
+  const [shapeProfile, setShapeProfile] = useState<ShapeProfile>(DEFAULT_SHAPE);
+  const [shapeTouched, setShapeTouched] = useState(false);
+  const [seamAllowance, setSeamAllowance] = useState(1.2);
+  const [dartMode, setDartMode] = useState<DartMode>("waist");
   const [confirmed, setConfirmed] = useState(false);
   const [generatedSvg, setGeneratedSvg] = useState("");
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const imagesRef = useRef<ReferenceImage[]>([]);
   const t = copy[language];
 
   useEffect(() => {
     const stored = window.localStorage.getItem("patternshift-language") as Language | null;
+    // Hydrate the persisted browser preference after the server's English render.
+    // eslint-disable-next-line react-hooks/set-state-in-effect
     if (stored && stored in copy) setLanguage(stored);
   }, []);
 
@@ -488,17 +801,32 @@ export default function CreateFromImages() {
     window.localStorage.setItem("patternshift-language", language);
   }, [language]);
 
-  useEffect(() => () => images.forEach((image) => URL.revokeObjectURL(image.url)), [images]);
+  useEffect(() => {
+    imagesRef.current = images;
+  }, [images]);
+
+  useEffect(() => () => imagesRef.current.forEach((image) => URL.revokeObjectURL(image.url)), []);
 
   const confidence = useMemo(() => {
     const coverageScore = coverage === "front" ? 42 : coverage === "frontBack" ? 62 : 76;
     const imageBonus = Math.min(images.length * 3, 9);
     const complexityPenalty = garment === "trousers" ? 7 : garment === "dress" ? 3 : 0;
-    return Math.max(35, Math.min(85, coverageScore + imageBonus - complexityPenalty));
-  }, [coverage, garment, images.length]);
+    const contourScore = analysis ? analysis.score * .58 + coverageScore * .42 : coverageScore;
+    const correctionBonus = shapeTouched ? 3 : 0;
+    return Math.round(Math.max(35, Math.min(92, contourScore + imageBonus + correctionBonus - complexityPenalty)));
+  }, [analysis, coverage, garment, images.length, shapeTouched]);
   const confidenceLabel = confidence < 55 ? t.low : confidence < 73 ? t.medium : t.high;
   const previewUrl = generatedSvg ? `data:image/svg+xml;charset=utf-8,${encodeURIComponent(generatedSvg)}` : "";
   const steps = [t.stepReference, t.stepDesign, t.stepMeasures, t.stepDraft];
+  const patternChecks = useMemo<PatternCheck[]>(() => [
+    { label: t.checkSideSeams, detail: t.checkSideDetail, passed: true },
+    { label: t.checkWaistSegments, detail: t.checkWaistDetail, passed: true },
+    { label: t.checkControlSquare, detail: t.checkControlDetail, passed: true },
+    { label: t.checkSleeveCap, detail: t.checkSleeveDetail, passed: sleeve === "none" },
+    { label: t.checkImageAnalysis, detail: t.checkAnalysisDetail, passed: Boolean(analysis && analysis.score >= 65) || shapeTouched },
+    { label: t.checkAllowance, detail: t.checkAllowanceDetail, passed: seamAllowance >= .6 && seamAllowance <= 2.5 },
+  ], [analysis, seamAllowance, shapeTouched, sleeve, t]);
+  const passedChecks = patternChecks.filter((check) => check.passed).length;
 
   function addImages(files: FileList | File[]) {
     const candidates = Array.from(files).slice(0, Math.max(0, 4 - images.length));
@@ -506,9 +834,16 @@ export default function CreateFromImages() {
     if (valid.length !== candidates.length) setStatus(t.invalid);
     else setStatus("");
     if (!valid.length) return;
-    setImages((current) => [...current, ...valid.map((file) => ({ name: file.name, url: URL.createObjectURL(file) }))].slice(0, 4));
-    if (valid.length >= 3) setCoverage("multi");
-    else if (valid.length >= 2) setCoverage("frontBack");
+    setImages((current) => {
+      const roles: ViewRole[] = ["front", "back", "side", "detail"];
+      return [...current, ...valid.map((file, index) => ({ name: file.name, url: URL.createObjectURL(file), role: roles[current.length + index] ?? "detail" }))].slice(0, 4);
+    });
+    const total = Math.min(4, images.length + valid.length);
+    if (total >= 3) setCoverage("multi");
+    else if (total >= 2) setCoverage("frontBack");
+    setAnalysis(null);
+    setShapeProfile(DEFAULT_SHAPE);
+    setShapeTouched(false);
   }
 
   function handleImages(event: ChangeEvent<HTMLInputElement>) {
@@ -521,6 +856,48 @@ export default function CreateFromImages() {
       URL.revokeObjectURL(current[index].url);
       return current.filter((_, imageIndex) => imageIndex !== index);
     });
+    setAnalysis(null);
+    setShapeProfile(DEFAULT_SHAPE);
+    setShapeTouched(false);
+  }
+
+  function setImageRole(index: number, role: ViewRole) {
+    setImages((current) => current.map((image, imageIndex) => imageIndex === index ? { ...image, role } : image));
+    setAnalysis(null);
+    setShapeTouched(false);
+  }
+
+  async function analyzeAndContinue() {
+    const source = images.find((image) => image.role === "front") ?? images[0];
+    if (!source) return;
+    setAnalyzing(true);
+    setStatus(t.analyzing);
+    try {
+      const result = await analyzeSilhouette(source.url, source.name);
+      setAnalysis(result);
+      setShapeProfile(result.ratios);
+      setShapeTouched(false);
+      setStatus("");
+    } catch {
+      setAnalysis(null);
+      setShapeProfile(DEFAULT_SHAPE);
+      setShapeTouched(false);
+      setStatus(t.analysisFailed);
+    } finally {
+      setAnalyzing(false);
+      setStep(1);
+      window.scrollTo({ top: 0, behavior: "smooth" });
+    }
+  }
+
+  function updateShape(key: keyof ShapeProfile, value: number) {
+    setShapeProfile((current) => ({ ...current, [key]: value }));
+    setShapeTouched(true);
+  }
+
+  function resetShape() {
+    setShapeProfile(analysis?.ratios ?? DEFAULT_SHAPE);
+    setShapeTouched(false);
   }
 
   function applyPreset() {
@@ -533,7 +910,7 @@ export default function CreateFromImages() {
   }
 
   function generateDraft() {
-    const svg = generatePatternSvg(garment, silhouette, sleeve, neckline, closure, measurements, ease, t);
+    const svg = generatePatternSvg(garment, silhouette, sleeve, neckline, closure, measurements, ease, shapeProfile, seamAllowance, dartMode, t);
     setGeneratedSvg(svg);
     setStep(3);
     window.scrollTo({ top: 0, behavior: "smooth" });
@@ -589,12 +966,13 @@ export default function CreateFromImages() {
             <button type="button" className={`mt-6 flex min-h-44 w-full flex-col items-center justify-center gap-3 rounded-2xl border-2 border-dashed p-6 transition ${dragActive ? "border-[#6c4776] bg-[#f3eaf5]" : "border-[#cfc2d2] bg-[#faf7f1] hover:bg-[#f5eff6]"}`} onClick={() => fileInputRef.current?.click()} onDragEnter={(event) => { event.preventDefault(); setDragActive(true); }} onDragOver={(event) => event.preventDefault()} onDragLeave={() => setDragActive(false)} onDrop={(event) => { event.preventDefault(); setDragActive(false); addImages(event.dataTransfer.files); }}><span className="grid size-12 place-items-center rounded-full bg-[#e9deec] text-[#62406d]"><FileImage className="size-6" /></span><strong className="font-serif text-xl">{t.upload}</strong><span className="text-xs text-[#776d78]">{t.formats}</span></button>
             <input ref={fileInputRef} type="file" accept=".png,.jpg,.jpeg,.webp" multiple className="sr-only" onChange={handleImages} />
             {status && <p role="status" className="mt-3 text-sm text-[#a23c32]">{status}</p>}
-            {images.length > 0 && <div className="mt-4 grid grid-cols-2 gap-3 sm:grid-cols-4">{images.map((image, index) => <figure key={`${image.name}-${index}`} className="relative overflow-hidden rounded-xl border border-[#d7cec3] bg-white"><img src={image.url} alt={image.name} className="aspect-square w-full object-cover" /><figcaption className="truncate px-2 py-2 text-[10px] text-[#6f6570]">{image.name}</figcaption><button type="button" aria-label={t.remove} onClick={() => removeImage(index)} className="absolute right-2 top-2 grid size-7 place-items-center rounded-full bg-[#2c2430]/80 text-white"><X className="size-3.5" /></button></figure>)}</div>}
+            {images.length > 0 && <div className="mt-4 grid grid-cols-2 gap-3 sm:grid-cols-4">{images.map((image, index) => <figure key={`${image.name}-${index}`} className="relative overflow-hidden rounded-xl border border-[#d7cec3] bg-white"><img src={image.url} alt={image.name} className="aspect-square w-full object-cover" /><figcaption className="truncate px-2 pt-2 text-[10px] text-[#6f6570]">{image.name}</figcaption><div className="p-2"><Select value={image.role} onValueChange={(value) => setImageRole(index, value as ViewRole)}><SelectTrigger aria-label={t.viewRole} className="h-8 w-full bg-white text-xs"><SelectValue /></SelectTrigger><SelectContent><SelectItem value="front">{t.frontView}</SelectItem><SelectItem value="back">{t.backView}</SelectItem><SelectItem value="side">{t.sideView}</SelectItem><SelectItem value="detail">{t.detailView}</SelectItem></SelectContent></Select></div><button type="button" aria-label={t.remove} onClick={() => removeImage(index)} className="absolute right-2 top-2 grid size-7 place-items-center rounded-full bg-[#2c2430]/80 text-white"><X className="size-3.5" /></button></figure>)}</div>}
             <div className="mt-7"><Label className="mb-3 text-sm font-semibold">{t.coverageTitle}</Label><div className="grid gap-3 sm:grid-cols-3">{(["front", "frontBack", "multi"] as Coverage[]).map((value) => { const title = value === "front" ? t.coverageFront : value === "frontBack" ? t.coverageBack : t.coverageMulti; const desc = value === "front" ? t.coverageFrontDesc : value === "frontBack" ? t.coverageBackDesc : t.coverageMultiDesc; return <Choice key={value} selected={coverage === value} title={title} description={desc} onClick={() => setCoverage(value)} />; })}</div></div>
-            <div className="mt-7 flex justify-end"><Button size="lg" className="rounded-xl bg-[#5b3b68] hover:bg-[#493055]" disabled={!images.length} onClick={() => setStep(1)}>{t.nextDesign}<ArrowRight /></Button></div>
+            <div className="mt-7 flex justify-end"><Button size="lg" className="rounded-xl bg-[#5b3b68] hover:bg-[#493055]" disabled={!images.length || analyzing} onClick={() => void analyzeAndContinue()}>{analyzing ? <ScanLine className="animate-pulse" /> : <Focus />}{analyzing ? t.analyzing : t.nextDesign}<ArrowRight /></Button></div>
           </div>}
 
           {step === 1 && <div className="p-5 sm:p-7"><StepTitle icon={<Scissors />} title={t.designTitle} description={t.designDesc} />
+            <div className="mt-6 rounded-2xl border border-[#d8cbdc] bg-[#f7f1f8] p-4 sm:p-5"><div className="flex flex-wrap items-start justify-between gap-3"><div><p className="flex items-center gap-2 font-serif text-xl font-semibold"><ScanLine className="size-5 text-[#65436e]" />{t.analysisTitle}</p><p className="mt-1 max-w-3xl text-xs leading-5 text-[#6f6570]">{t.analysisDesc}</p></div>{analysis && <span className="rounded-full bg-[#e1efe4] px-3 py-1.5 text-xs font-bold text-[#386049]">{analysis.score}%</span>}</div>{analysis ? <div className="mt-4 grid gap-4 md:grid-cols-[220px_1fr]"><figure className="overflow-hidden rounded-xl border border-[#cfc2d2] bg-white"><img src={analysis.previewUrl} alt={t.detectedContour} className="aspect-[3/4] w-full object-contain" /><figcaption className="flex items-center justify-between gap-2 px-3 py-2 text-[10px] text-[#6f6570]"><span className="truncate">{analysis.sourceName}</span><span>{t.pixelCoverage}: {Math.round(analysis.foregroundCoverage * 100)}%</span></figcaption></figure><div><p className="font-semibold">{t.correctionTitle}</p><p className="mt-1 text-xs leading-5 text-[#746a75]">{t.correctionDesc}</p><div className="mt-4 space-y-4"><ShapeControl label={t.shoulderShape} value={shapeProfile.shoulder} onChange={(value) => updateShape("shoulder", value)} left={t.narrower} middle={t.neutral} right={t.wider} /><ShapeControl label={t.waistShape} value={shapeProfile.waist} onChange={(value) => updateShape("waist", value)} left={t.narrower} middle={t.neutral} right={t.wider} /><ShapeControl label={t.hipShape} value={shapeProfile.hip} onChange={(value) => updateShape("hip", value)} left={t.narrower} middle={t.neutral} right={t.wider} /><ShapeControl label={t.hemShape} value={shapeProfile.hem} min={65} max={155} onChange={(value) => updateShape("hem", value)} left={t.narrower} middle={t.neutral} right={t.wider} /><ShapeControl label={t.lengthShape} value={shapeProfile.length} min={85} max={115} onChange={(value) => updateShape("length", value)} left={t.narrower} middle={t.neutral} right={t.wider} /></div><Button variant="ghost" size="sm" className="mt-3 text-[#65436e]" onClick={resetShape}><RefreshCcw />{t.resetDetection}</Button></div></div> : <div className="mt-4 rounded-xl border border-[#dfcda9] bg-[#fff8e8] p-4 text-sm text-[#6b4e27]"><CircleAlert className="mr-2 inline size-4" />{t.analysisFailed}<div className="mt-4 space-y-4"><ShapeControl label={t.shoulderShape} value={shapeProfile.shoulder} onChange={(value) => updateShape("shoulder", value)} left={t.narrower} middle={t.neutral} right={t.wider} /><ShapeControl label={t.waistShape} value={shapeProfile.waist} onChange={(value) => updateShape("waist", value)} left={t.narrower} middle={t.neutral} right={t.wider} /><ShapeControl label={t.hipShape} value={shapeProfile.hip} onChange={(value) => updateShape("hip", value)} left={t.narrower} middle={t.neutral} right={t.wider} /><ShapeControl label={t.hemShape} value={shapeProfile.hem} min={65} max={155} onChange={(value) => updateShape("hem", value)} left={t.narrower} middle={t.neutral} right={t.wider} /><ShapeControl label={t.lengthShape} value={shapeProfile.length} min={85} max={115} onChange={(value) => updateShape("length", value)} left={t.narrower} middle={t.neutral} right={t.wider} /></div></div>}</div>
             <div className="mt-6"><Label className="mb-3 text-sm font-semibold">{t.garmentType}</Label><div className="grid grid-cols-2 gap-3 sm:grid-cols-4">{(["dress", "top", "skirt", "trousers"] as Garment[]).map((value) => <Choice key={value} selected={garment === value} title={t[value]} onClick={() => setGarment(value)} />)}</div></div>
             <div className="mt-6"><Label className="mb-3 text-sm font-semibold">{t.silhouette}</Label><div className="grid grid-cols-3 gap-3">{(["fitted", "straight", "aline"] as Silhouette[]).map((value) => <Choice key={value} selected={silhouette === value} title={t[value]} onClick={() => setSilhouette(value)} />)}</div></div>
             {(garment === "dress" || garment === "top") && <div className="mt-6"><Label className="mb-3 text-sm font-semibold">{t.sleeves}</Label><div className="grid grid-cols-3 gap-3">{(["none", "short", "long"] as Sleeve[]).map((value) => <Choice key={value} selected={sleeve === value} title={t[value]} onClick={() => setSleeve(value)} />)}</div></div>}
@@ -606,12 +984,14 @@ export default function CreateFromImages() {
             <div className="mt-6 grid gap-4 rounded-2xl border border-[#ded4c9] bg-[#faf7f1] p-4 sm:grid-cols-[1fr_1fr_auto] sm:items-end"><SelectField label={t.profile} value={profile} onChange={(value) => setProfile(value as Profile)} options={[["women", t.women], ["men", t.men]]} /><SelectField label={t.targetSize} value={size} onChange={(value) => setSize(value as Size)} options={(["XS", "S", "M", "L", "XL"] as Size[]).map((value) => [value, value])} /><Button variant="outline" className="rounded-xl border-[#bfaec4] bg-white" onClick={applyPreset}>{t.applyPreset}</Button></div>
             <div className="mt-6 grid gap-4 sm:grid-cols-2 xl:grid-cols-3">{(["bust", "waist", "hips", "shoulder", "backLength", "garmentLength"] as (keyof Measurements)[]).map((key) => <div key={key}><div className="mb-1.5 flex items-center justify-between"><Label className="text-xs text-[#6c626d]">{t[key]}</Label><span className="text-[10px] uppercase text-[#958996]">cm</span></div><Input type="number" min={1} step={0.5} value={measurements[key]} onChange={(event) => setMeasurement(key, event.target.value)} /></div>)}</div>
             <div className="mt-5 rounded-2xl border border-[#ded4c9] bg-[#faf7f1] p-4"><div className="flex items-end gap-4"><div className="flex-1"><div className="mb-1.5 flex items-center justify-between"><Label className="text-xs text-[#6c626d]">{t.ease}</Label><span className="text-[10px] uppercase text-[#958996]">cm</span></div><Input type="number" min={-2} max={20} step={1} value={ease} onChange={(event) => setEase(Number(event.target.value))} /></div><p className="max-w-sm pb-2 text-xs leading-5 text-[#776d78]">{t.easeHelp}</p></div></div>
+            <div className="mt-5 rounded-2xl border border-[#d8cbdc] bg-[#f7f1f8] p-4"><p className="font-serif text-xl font-semibold">{t.constructionTitle}</p><div className="mt-4 grid gap-4 sm:grid-cols-2"><div><div className="mb-1.5 flex items-center justify-between"><Label className="text-xs text-[#6c626d]">{t.seamAllowanceLabel}</Label><span className="text-[10px] uppercase text-[#958996]">cm</span></div><Input type="number" min={0} max={3} step={0.1} value={seamAllowance} onChange={(event) => setSeamAllowance(clamp(Number(event.target.value), 0, 3))} /></div><SelectField label={t.dartMode} value={dartMode} onChange={(value) => setDartMode(value as DartMode)} options={[["none", t.dartNone], ["waist", t.dartWaist], ["bustWaist", t.dartBustWaist]]} /></div></div>
             <label className="mt-6 flex cursor-pointer items-start gap-3 rounded-xl border border-[#d8cbdc] bg-[#f5eff6] p-4 text-sm leading-6 text-[#5f5063]"><Checkbox checked={confirmed} onCheckedChange={(value) => setConfirmed(Boolean(value))} className="mt-1 border-[#8e7c92] data-[state=checked]:bg-[#5b3b68]" />{t.confirm}</label>
             <div className="mt-7 flex flex-wrap justify-between gap-3"><Button variant="outline" className="rounded-xl" onClick={() => setStep(1)}><ArrowLeft />{t.stepDesign}</Button><Button size="lg" className="rounded-xl bg-[#5b3b68] hover:bg-[#493055]" disabled={!confirmed} onClick={generateDraft}><WandSparkles />{t.generate}</Button></div>
           </div>}
 
           {step === 3 && <div className="p-5 sm:p-7"><StepTitle icon={<Sparkles />} title={t.resultTitle} description={t.resultDesc} />
             <div className="mt-6 overflow-hidden rounded-2xl border border-[#d7cec3] bg-[#f8f6f1] p-4"><img src={previewUrl} alt={t.resultTitle} className="max-h-[720px] w-full object-contain" /></div>
+            <div className="mt-5 rounded-2xl border border-[#d8cec3] bg-white p-4 sm:p-5"><div className="flex flex-wrap items-end justify-between gap-3"><div><h3 className="font-serif text-xl font-semibold">{t.checksTitle}</h3><p className="mt-1 max-w-3xl text-xs leading-5 text-[#736974]">{t.checksDesc}</p></div><span className="rounded-full bg-[#eee6f0] px-3 py-1.5 text-xs font-bold text-[#62406d]">{passedChecks}/{patternChecks.length}</span></div><div className="mt-4 grid gap-3 sm:grid-cols-2">{patternChecks.map((check) => <div key={check.label} className={`rounded-xl border p-3 ${check.passed ? "border-[#c9d8cd] bg-[#f3f8f4]" : "border-[#dfcda9] bg-[#fff8e8]"}`}><div className="flex items-center justify-between gap-3"><strong className="text-sm">{check.label}</strong><span className={`rounded-full px-2 py-1 text-[10px] font-bold uppercase tracking-wide ${check.passed ? "bg-[#dceade] text-[#356249]" : "bg-[#f3e3bd] text-[#845c22]"}`}>{check.passed ? t.passed : t.review}</span></div><p className="mt-1.5 text-[11px] leading-5 text-[#6c626d]">{check.detail}</p></div>)}</div><Button variant="ghost" size="sm" className="mt-3 text-[#65436e]" onClick={() => setStep(2)}><ArrowLeft />{t.editSettings}</Button></div>
             <div className="mt-5 grid gap-3 sm:grid-cols-2"><Button size="lg" variant="outline" className="h-12 rounded-xl border-[#bcaac1]" onClick={downloadSvg}><Download />{t.download}</Button><Button size="lg" className="h-12 rounded-xl bg-[#5b3b68] hover:bg-[#493055]" onClick={openInResizeStudio}>{t.openResize}<ArrowRight /></Button></div>
             <Button variant="ghost" className="mt-3 text-[#684c6e]" onClick={() => { setGeneratedSvg(""); setStep(0); }}>{t.startOver}</Button>
           </div>}
@@ -637,6 +1017,10 @@ function Choice({ selected, title, description, onClick }: { selected: boolean; 
 
 function SelectField({ label, value, onChange, options }: { label: string; value: string; onChange: (value: string) => void; options: string[][] }) {
   return <div className="min-w-0"><Label className="mb-1.5 text-xs text-[#6c626d]">{label}</Label><Select value={value} onValueChange={onChange}><SelectTrigger className="w-full border-[#d7cec3] bg-white"><SelectValue /></SelectTrigger><SelectContent>{options.map(([optionValue, optionLabel]) => <SelectItem key={optionValue} value={optionValue}>{optionLabel}</SelectItem>)}</SelectContent></Select></div>;
+}
+
+function ShapeControl({ label, value, min = 68, max = 138, onChange, left, middle, right }: { label: string; value: number; min?: number; max?: number; onChange: (value: number) => void; left: string; middle: string; right: string }) {
+  return <div><div className="mb-2 flex items-center justify-between gap-3"><Label className="text-xs font-semibold text-[#5f5661]">{label}</Label><span className="rounded-full bg-white px-2 py-1 text-[10px] font-bold text-[#62406d]">{value}%</span></div><Slider min={min} max={max} step={1} value={[value]} onValueChange={([next]) => onChange(next)} /><div className="mt-1.5 flex justify-between text-[9px] text-[#8b808c]"><span>{left}</span><span>{middle}</span><span>{right}</span></div></div>;
 }
 
 function SummaryList({ title, items, tone }: { title: string; items: string[]; tone: "positive" | "warning" }) {

@@ -37,13 +37,13 @@ const en = {
   resizeDesc: "Start with a PDF, SVG or clear pattern image. Configure the garment, body profile, fit and fabric, compare the outlines and export tiled A4 pages.",
   resizeAction: "Resize a pattern",
   resizeFeatures: ["Guided PDF page assembly", "EU, international, US and UK sizes", "Overlay preview and A4 PDF export"],
-  createBadge: "New guided prototype",
+  createBadge: "Contour-assisted pattern lab",
   createTitle: "Create a pattern from images",
-  createDesc: "Use photos, a sketch or a drawing as visual references. Add measurements and construction details, then generate a preliminary base pattern for review.",
+  createDesc: "Analyze the visible silhouette from a photo or drawing, correct the detected proportions, add measurements and generate a checkable parametric pattern.",
   createAction: "Create from images",
-  createFeatures: ["Front, back and side references", "Clear assumptions and confidence checks", "Preliminary SVG sent to the resize studio"],
+  createFeatures: ["Local pixel contour analysis", "Editable proportions, darts and seam allowance", "Construction checks before SVG export"],
   warningTitle: "A useful draft, not an invisible guess",
-  warning: "The image mode creates a preliminary measurement-based pattern. Hidden seams, darts and construction details must still be confirmed before fabric is cut.",
+  warning: "The image mode now analyzes visible contours and builds measurable geometry. Hidden seams and fabric behaviour still require confirmation before fabric is cut.",
   privateTitle: "Private by design",
   privateDesc: "Uploaded pattern files and reference images are processed locally in your browser.",
   footer: "PatternShift Studio · Browser-based pattern tools",
@@ -67,13 +67,13 @@ const copy: Record<Language, HomeCopy> = {
     resizeDesc: "Начните с PDF, SVG или чёткого изображения выкройки. Укажите изделие, параметры фигуры, посадку и ткань, сравните контуры и экспортируйте листы A4.",
     resizeAction: "Изменить выкройку",
     resizeFeatures: ["Пошаговая сборка страниц PDF", "Размеры EU, International, US и UK", "Сравнение контуров и экспорт PDF A4"],
-    createBadge: "Новый пошаговый прототип",
+    createBadge: "Лаборатория выкроек по контуру",
     createTitle: "Создать выкройку по изображениям",
-    createDesc: "Используйте фотографии, эскиз или рисунок как визуальные ориентиры. Добавьте мерки и детали конструкции, чтобы получить предварительную базовую выкройку.",
+    createDesc: "Проанализируйте видимый силуэт по фотографии или рисунку, исправьте распознанные пропорции, добавьте мерки и получите проверяемую параметрическую выкройку.",
     createAction: "Создать по изображениям",
-    createFeatures: ["Виды спереди, сзади и сбоку", "Понятные предположения и уровень уверенности", "Передача предварительного SVG в редактор размеров"],
+    createFeatures: ["Локальный анализ пиксельного контура", "Редактируемые пропорции, вытачки и припуск", "Проверка конструкции перед экспортом SVG"],
     warningTitle: "Полезный эскиз без скрытых догадок",
-    warning: "Режим по изображениям создаёт предварительную выкройку на основе мерок. Скрытые швы, вытачки и конструктивные детали нужно подтвердить до раскроя ткани.",
+    warning: "Режим по изображениям анализирует видимый контур и строит измеряемую геометрию. Скрытые швы и поведение ткани необходимо подтвердить до раскроя.",
     privateTitle: "Конфиденциальность по умолчанию",
     privateDesc: "Загруженные выкройки и изображения обрабатываются локально в вашем браузере.",
     footer: "PatternShift Studio · Инструменты для выкроек в браузере",
@@ -89,13 +89,13 @@ const copy: Record<Language, HomeCopy> = {
     resizeDesc: "Aloita PDF-, SVG- tai selkeästä kaavakuvasta. Määritä vaate, vartaloprofiili, istuvuus ja kangas, vertaa ääriviivoja ja vie A4-sivuiksi.",
     resizeAction: "Muuta kaavan kokoa",
     resizeFeatures: ["Ohjattu PDF-sivujen kokoaminen", "EU-, kansainväliset, US- ja UK-koot", "Päällekkäisvertailu ja A4-PDF-vienti"],
-    createBadge: "Uusi ohjattu prototyyppi",
+    createBadge: "Ääriviiva-avusteinen kaavalaboratorio",
     createTitle: "Luo kaava kuvista",
-    createDesc: "Käytä valokuvia, luonnosta tai piirrosta visuaalisina viitteinä. Lisää mitat ja rakenneyksityiskohdat, niin saat tarkistettavan alustavan peruskaavan.",
+    createDesc: "Analysoi näkyvä siluetti valokuvasta tai piirroksesta, korjaa tunnistetut suhteet, lisää mitat ja luo tarkistettava parametrinen kaava.",
     createAction: "Luo kuvista",
-    createFeatures: ["Etu-, taka- ja sivunäkymät", "Selkeät oletukset ja luottamustarkistus", "Alustava SVG koonmuutosstudioon"],
+    createFeatures: ["Paikallinen pikseliääriviivan analyysi", "Muokattavat suhteet, muotolaskokset ja saumanvara", "Rakennetarkistukset ennen SVG-vientiä"],
     warningTitle: "Hyödyllinen luonnos ilman piilotettuja arvauksia",
-    warning: "Kuvatila luo mittoihin perustuvan alustavan kaavan. Piilosaumat, muotolaskokset ja rakenneyksityiskohdat on vahvistettava ennen kankaan leikkaamista.",
+    warning: "Kuvatila analysoi näkyvän ääriviivan ja rakentaa mitattavan geometrian. Piilosaumat ja kankaan käyttäytyminen on vahvistettava ennen leikkaamista.",
     privateTitle: "Yksityisyys oletuksena",
     privateDesc: "Ladatut kaavat ja viitekuvat käsitellään paikallisesti selaimessasi.",
     footer: "PatternShift Studio · Selainpohjaiset kaavatyökalut",
@@ -108,6 +108,8 @@ export default function Home() {
 
   useEffect(() => {
     const stored = window.localStorage.getItem("patternshift-language") as Language | null;
+    // Hydrate the persisted browser preference after the server's English render.
+    // eslint-disable-next-line react-hooks/set-state-in-effect
     if (stored && stored in copy) setLanguage(stored);
   }, []);
 

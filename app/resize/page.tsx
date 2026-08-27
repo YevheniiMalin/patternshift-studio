@@ -290,6 +290,8 @@ export default function Home() {
 
   useEffect(() => {
     const storedLanguage = window.localStorage.getItem("patternshift-language") as Language | null;
+    // Hydrate the persisted browser preference after the server's English render.
+    // eslint-disable-next-line react-hooks/set-state-in-effect
     if (storedLanguage && storedLanguage in translations) setLanguage(storedLanguage);
   }, []);
 
