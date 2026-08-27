@@ -1,6 +1,6 @@
 # PatternShift Studio
 
-PatternShift Studio is a privacy-first browser application with two guided workflows: resizing an existing sewing pattern and reconstructing an editable parametric base pattern from reference images, garment details and measurements.
+PatternShift Studio is a browser application with two guided workflows: resizing an existing sewing pattern and reconstructing a preliminary pattern from reference images, garment details and measurements. Image reconstruction supports a free local contour workflow and an optional self-hosted SewFormer GPU service.
 
 ## Current capabilities
 
@@ -18,9 +18,13 @@ PatternShift Studio is a privacy-first browser application with two guided workf
 - English interface by default, with Russian and Finnish translations
 - first-visit walkthrough, guided three-step setup and contextual explanations
 - one-click demonstration pattern for learning the workflow without a personal file
-- fully local browser processing — uploaded patterns are not sent to a server
+- fully local processing for the resize and contour modes
 - image-reference wizard with explicit front, back, side and detail roles
 - local pixel-based foreground and silhouette analysis with a contour preview
+- optional SewFormer inference adapter for predicted panels and stitch relationships
+- measurable SVG rendering with colour-coded stitch pairs
+- secure browser-to-server configuration with an optional access key
+- scale-only AI re-rendering without repeating GPU inference
 - editable shoulder, waist, hip, hem and length proportions derived from the contour
 - configurable darts, design ease and seam allowance
 - construction report for seam compatibility, print calibration, sleeves, image quality and allowance range
@@ -30,7 +34,15 @@ PatternShift Studio is a privacy-first browser application with two guided workf
 
 ## Accuracy boundary
 
-The resize workflow creates a proportional draft and does not yet identify and move professional grading anchor points independently. The image workflow performs real local contour analysis, but it cannot infer hidden seams, depth, fabric behaviour or internal construction from pixels alone. Before cutting final fabric, verify matching seams, grainline, darts, armholes, sleeve caps, hidden construction and fit with a test garment.
+The resize workflow creates a proportional draft and does not yet identify and move professional grading anchor points independently. The local image workflow performs real contour analysis, but it cannot infer hidden seams, depth, fabric behaviour or internal construction from pixels alone. SewFormer mode predicts panels and stitch relationships, but remains a research reconstruction: it does not prove fit or add production-ready seam allowances. Before cutting final fabric, verify matching seams, grainline, darts, armholes, sleeve caps, hidden construction and fit with a test garment.
+
+## AI reconstruction server
+
+The optional service lives in [`ai-server`](./ai-server). It wraps the official SewFormer inference entrypoint behind a FastAPI API, validates uploads, serializes GPU jobs, converts the predicted specification to SVG and exposes health and scale-only rendering endpoints.
+
+PatternShift does not bundle the upstream SewFormer source, checkpoint or SewFactory dataset. Their official pages currently publish no usage licence, so obtain permission before production or commercial use. The service requires an NVIDIA GPU and can be run without hosting fees on hardware you already own. GitHub Pages hosts only the static interface and cannot run the model.
+
+See [`ai-server/README.md`](./ai-server/README.md) for setup and tests.
 
 ## Guided setup
 
@@ -47,7 +59,7 @@ The GitHub Pages workflow builds a static Next.js export automatically from the 
 
 ## Roadmap
 
-- AI-assisted panel recognition from multiple garment views
+- multi-view AI fusion beyond SewFormer’s single-image workflow
 - editable assumptions and construction anchors
 - vector anchor-point editor for true multi-point grading
 - DXF import

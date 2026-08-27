@@ -5,6 +5,7 @@ import Link from "next/link";
 import {
   ArrowLeft,
   ArrowRight,
+  BrainCircuit,
   Camera,
   Check,
   CircleAlert,
@@ -12,6 +13,7 @@ import {
   FileImage,
   Focus,
   Languages,
+  KeyRound,
   RefreshCcw,
   Ruler,
   ScanLine,
@@ -44,6 +46,7 @@ type Profile = "women" | "men";
 type Size = "XS" | "S" | "M" | "L" | "XL";
 type ViewRole = "front" | "back" | "side" | "detail";
 type DartMode = "none" | "waist" | "bustWaist";
+type AnalysisEngine = "local" | "sewformer";
 type Measurements = {
   bust: number;
   waist: number;
@@ -62,8 +65,22 @@ type ShapeAnalysis = {
   ratios: ShapeProfile;
 };
 type PatternCheck = { label: string; detail: string; passed: boolean };
+type AiPattern = {
+  model: string;
+  modelVersion: string;
+  patternSvg: string;
+  panelCount: number;
+  stitchCount: number;
+  widthCm: number;
+  heightCm: number;
+  appliedScale: number;
+  targetLengthCm: number | null;
+  specification: Record<string, unknown>;
+  warnings: string[];
+};
 
 const publicBasePath = process.env.NEXT_PUBLIC_BASE_PATH ?? "";
+const defaultAiEndpoint = process.env.NEXT_PUBLIC_PATTERN_AI_URL ?? "";
 
 const SIZE_PRESETS: Record<Profile, Record<Size, Pick<Measurements, "bust" | "waist" | "hips">>> = {
   women: {
@@ -220,7 +237,7 @@ const en = {
   eyebrow: "Create from visual references",
   title: "Reconstruct a checkable pattern from images and measurements.",
   intro: "Upload photos, a sketch or a drawing. PatternShift analyzes the visible contour, lets you correct the detected proportions and builds measurable pattern pieces from the confirmed result.",
-  local: "Reference images stay in this browser",
+  local: "Local mode keeps images in this browser",
   prototype: "Contour-assisted workflow",
   honestyTitle: "What this release does",
   honesty: "The browser now analyzes the visible silhouette and uses it in the pattern geometry. Hidden seams and fabric behaviour still cannot be proven from pixels, so every detected proportion remains editable and every assumption is reported.",
@@ -234,6 +251,29 @@ const en = {
   formats: "PNG, JPG or WebP · up to 4 images · 10 MB each",
   invalid: "Use PNG, JPG or WebP images smaller than 10 MB.",
   remove: "Remove reference image",
+  engineTitle: "Reconstruction engine",
+  engineDesc: "Use the private local contour workflow now, or connect a GPU server running the official SewFormer checkpoint.",
+  localEngine: "Local contour",
+  localEngineDesc: "Fast, private and available without a server.",
+  aiEngine: "SewFormer AI",
+  aiEngineDesc: "Predicts panels and stitch relationships on an external NVIDIA GPU.",
+  aiEndpoint: "AI server address",
+  aiEndpointPlaceholder: "https://your-gpu-server.example.com",
+  aiApiKey: "Server access key",
+  aiApiKeyHelp: "The key stays in this browser tab and is sent only to the selected server.",
+  aiServerMissing: "Enter the HTTPS address of a running PatternShift AI server.",
+  aiAnalyzing: "SewFormer is reconstructing panels and stitches…",
+  aiFailed: "The AI server could not complete reconstruction. Local contour analysis is still available.",
+  aiSuccess: "SewFormer reconstruction completed.",
+  aiPatternTitle: "SewFormer pattern structure",
+  aiPatternDesc: "These panels and stitch relationships came from the trained research checkpoint, not from the local parametric template.",
+  aiPanels: "Panels",
+  aiStitches: "Stitch pairs",
+  aiCanvas: "Pattern canvas",
+  aiResultDesc: "This SVG uses SewFormer-predicted panels and stitch relationships, scaled to the entered garment length. Verify every seam and add production seam allowances before cutting.",
+  aiAllowanceDetail: "SewFormer predicts seam lines. A production offset must be added and verified separately.",
+  aiRenderFailed: "The AI pattern could not be rescaled. Check the server connection and try again.",
+  aiRendering: "Preparing the measured AI pattern…",
   viewRole: "Image view",
   frontView: "Front",
   backView: "Back",
@@ -362,7 +402,7 @@ const copy: Record<Language, CreateCopy> = {
     eyebrow: "Создание по визуальным ориентирам",
     title: "Восстановите проверяемую выкройку по изображениям и меркам.",
     intro: "Загрузите фотографии, эскиз или рисунок. PatternShift проанализирует видимый контур, позволит исправить распознанные пропорции и построит измеряемые детали выкройки.",
-    local: "Изображения остаются в этом браузере",
+    local: "В локальном режиме изображения остаются в браузере",
     prototype: "Режим с анализом контура",
     honestyTitle: "Что умеет эта версия",
     honesty: "Браузер анализирует видимый силуэт и использует его в геометрии выкройки. Скрытые швы и поведение ткани нельзя доказать по пикселям, поэтому все пропорции можно исправить, а каждое предположение показывается отдельно.",
@@ -376,6 +416,29 @@ const copy: Record<Language, CreateCopy> = {
     formats: "PNG, JPG или WebP · до 4 изображений · по 10 МБ",
     invalid: "Используйте PNG, JPG или WebP размером меньше 10 МБ.",
     remove: "Удалить изображение",
+    engineTitle: "Механизм реконструкции",
+    engineDesc: "Используйте локальный анализ контура или подключите GPU-сервер с официальным checkpoint SewFormer.",
+    localEngine: "Локальный контур",
+    localEngineDesc: "Быстро, конфиденциально и без отдельного сервера.",
+    aiEngine: "AI SewFormer",
+    aiEngineDesc: "Предсказывает детали и связи швов на внешнем NVIDIA GPU.",
+    aiEndpoint: "Адрес AI-сервера",
+    aiEndpointPlaceholder: "https://ваш-gpu-сервер.example.com",
+    aiApiKey: "Ключ доступа к серверу",
+    aiApiKeyHelp: "Ключ остаётся в этой вкладке браузера и отправляется только выбранному серверу.",
+    aiServerMissing: "Укажите HTTPS-адрес работающего сервера PatternShift AI.",
+    aiAnalyzing: "SewFormer восстанавливает детали и связи швов…",
+    aiFailed: "AI-сервер не смог завершить реконструкцию. Локальный анализ контура всё ещё доступен.",
+    aiSuccess: "Реконструкция SewFormer завершена.",
+    aiPatternTitle: "Структура выкройки SewFormer",
+    aiPatternDesc: "Эти детали и связи швов получены обученной исследовательской моделью, а не локальным параметрическим шаблоном.",
+    aiPanels: "Детали",
+    aiStitches: "Пары швов",
+    aiCanvas: "Полотно выкройки",
+    aiResultDesc: "SVG использует детали и связи швов, предсказанные SewFormer, и масштабирован по введённой длине изделия. Проверьте каждый шов и добавьте производственные припуски до раскроя.",
+    aiAllowanceDetail: "SewFormer предсказывает линии швов. Производственный припуск нужно добавить и проверить отдельно.",
+    aiRenderFailed: "Не удалось изменить масштаб AI-выкройки. Проверьте соединение с сервером и попробуйте снова.",
+    aiRendering: "Подготавливаем AI-выкройку по заданным меркам…",
     viewRole: "Вид изображения",
     frontView: "Спереди",
     backView: "Сзади",
@@ -499,7 +562,7 @@ const copy: Record<Language, CreateCopy> = {
     eyebrow: "Luo visuaalisista viitteistä",
     title: "Rekonstruoi tarkistettava kaava kuvista ja mitoista.",
     intro: "Lataa valokuvia, luonnos tai piirros. PatternShift analysoi näkyvän ääriviivan, antaa korjata tunnistetut suhteet ja rakentaa mitattavat kaavakappaleet.",
-    local: "Viitekuvat pysyvät tässä selaimessa",
+    local: "Paikallistilassa kuvat pysyvät selaimessa",
     prototype: "Ääriviiva-avusteinen työnkulku",
     honestyTitle: "Mitä tämä versio tekee",
     honesty: "Selain analysoi näkyvän siluetin ja käyttää sitä kaavan geometriassa. Piilosaumoja tai kankaan käyttäytymistä ei voi todistaa pikseleistä, joten kaikkia suhteita voi korjata ja oletukset näytetään erikseen.",
@@ -513,6 +576,29 @@ const copy: Record<Language, CreateCopy> = {
     formats: "PNG, JPG tai WebP · enintään 4 kuvaa · 10 Mt kukin",
     invalid: "Käytä alle 10 Mt:n PNG-, JPG- tai WebP-kuvia.",
     remove: "Poista viitekuva",
+    engineTitle: "Rekonstruktiomoottori",
+    engineDesc: "Käytä paikallista ääriviiva-analyysia tai yhdistä GPU-palvelimeen, jossa on virallinen SewFormer-tarkistuspiste.",
+    localEngine: "Paikallinen ääriviiva",
+    localEngineDesc: "Nopea, yksityinen ja toimii ilman erillistä palvelinta.",
+    aiEngine: "SewFormer AI",
+    aiEngineDesc: "Ennustaa kappaleet ja saumasuhteet ulkoisella NVIDIA GPU:lla.",
+    aiEndpoint: "AI-palvelimen osoite",
+    aiEndpointPlaceholder: "https://gpu-palvelimesi.example.com",
+    aiApiKey: "Palvelimen käyttöavain",
+    aiApiKeyHelp: "Avain pysyy tässä selainvälilehdessä ja lähetetään vain valitulle palvelimelle.",
+    aiServerMissing: "Anna toimivan PatternShift AI -palvelimen HTTPS-osoite.",
+    aiAnalyzing: "SewFormer rekonstruoi kappaleita ja saumoja…",
+    aiFailed: "AI-palvelin ei saanut rekonstruktiota valmiiksi. Paikallinen ääriviiva-analyysi on silti käytettävissä.",
+    aiSuccess: "SewFormer-rekonstruktio valmistui.",
+    aiPatternTitle: "SewFormer-kaavarakenne",
+    aiPatternDesc: "Nämä kappaleet ja saumasuhteet tulivat koulutetusta tutkimusmallista, eivät paikallisesta parametrisesta mallipohjasta.",
+    aiPanels: "Kappaleet",
+    aiStitches: "Saumaparit",
+    aiCanvas: "Kaavapohja",
+    aiResultDesc: "SVG käyttää SewFormerin ennustamia kappaleita ja saumasuhteita sekä syötettyyn vaatteen pituuteen perustuvaa mittakaavaa. Tarkista jokainen sauma ja lisää tuotannon saumanvarat ennen leikkaamista.",
+    aiAllowanceDetail: "SewFormer ennustaa saumalinjat. Tuotannon saumanvara on lisättävä ja tarkistettava erikseen.",
+    aiRenderFailed: "AI-kaavan mittakaavaa ei voitu muuttaa. Tarkista palvelinyhteys ja yritä uudelleen.",
+    aiRendering: "Valmistellaan mitoitettua AI-kaavaa…",
     viewRole: "Kuvan näkymä",
     frontView: "Edestä",
     backView: "Takaa",
@@ -779,6 +865,11 @@ export default function CreateFromImages() {
   const [ease, setEase] = useState(4);
   const [analysis, setAnalysis] = useState<ShapeAnalysis | null>(null);
   const [analyzing, setAnalyzing] = useState(false);
+  const [generating, setGenerating] = useState(false);
+  const [engine, setEngine] = useState<AnalysisEngine>("local");
+  const [aiEndpoint, setAiEndpoint] = useState(defaultAiEndpoint);
+  const [aiApiKey, setAiApiKey] = useState("");
+  const [aiPattern, setAiPattern] = useState<AiPattern | null>(null);
   const [shapeProfile, setShapeProfile] = useState<ShapeProfile>(DEFAULT_SHAPE);
   const [shapeTouched, setShapeTouched] = useState(false);
   const [seamAllowance, setSeamAllowance] = useState(1.2);
@@ -811,21 +902,21 @@ export default function CreateFromImages() {
     const coverageScore = coverage === "front" ? 42 : coverage === "frontBack" ? 62 : 76;
     const imageBonus = Math.min(images.length * 3, 9);
     const complexityPenalty = garment === "trousers" ? 7 : garment === "dress" ? 3 : 0;
-    const contourScore = analysis ? analysis.score * .58 + coverageScore * .42 : coverageScore;
+    const contourScore = aiPattern ? 88 : analysis ? analysis.score * .58 + coverageScore * .42 : coverageScore;
     const correctionBonus = shapeTouched ? 3 : 0;
     return Math.round(Math.max(35, Math.min(92, contourScore + imageBonus + correctionBonus - complexityPenalty)));
-  }, [analysis, coverage, garment, images.length, shapeTouched]);
+  }, [aiPattern, analysis, coverage, garment, images.length, shapeTouched]);
   const confidenceLabel = confidence < 55 ? t.low : confidence < 73 ? t.medium : t.high;
   const previewUrl = generatedSvg ? `data:image/svg+xml;charset=utf-8,${encodeURIComponent(generatedSvg)}` : "";
   const steps = [t.stepReference, t.stepDesign, t.stepMeasures, t.stepDraft];
   const patternChecks = useMemo<PatternCheck[]>(() => [
-    { label: t.checkSideSeams, detail: t.checkSideDetail, passed: true },
+    { label: t.checkSideSeams, detail: t.checkSideDetail, passed: aiPattern ? aiPattern.stitchCount > 0 : true },
     { label: t.checkWaistSegments, detail: t.checkWaistDetail, passed: true },
     { label: t.checkControlSquare, detail: t.checkControlDetail, passed: true },
     { label: t.checkSleeveCap, detail: t.checkSleeveDetail, passed: sleeve === "none" },
-    { label: t.checkImageAnalysis, detail: t.checkAnalysisDetail, passed: Boolean(analysis && analysis.score >= 65) || shapeTouched },
-    { label: t.checkAllowance, detail: t.checkAllowanceDetail, passed: seamAllowance >= .6 && seamAllowance <= 2.5 },
-  ], [analysis, seamAllowance, shapeTouched, sleeve, t]);
+    { label: t.checkImageAnalysis, detail: t.checkAnalysisDetail, passed: Boolean(aiPattern) || Boolean(analysis && analysis.score >= 65) || shapeTouched },
+    { label: t.checkAllowance, detail: aiPattern ? t.aiAllowanceDetail : t.checkAllowanceDetail, passed: !aiPattern && seamAllowance >= .6 && seamAllowance <= 2.5 },
+  ], [aiPattern, analysis, seamAllowance, shapeTouched, sleeve, t]);
   const passedChecks = patternChecks.filter((check) => check.passed).length;
 
   function addImages(files: FileList | File[]) {
@@ -842,6 +933,7 @@ export default function CreateFromImages() {
     if (total >= 3) setCoverage("multi");
     else if (total >= 2) setCoverage("frontBack");
     setAnalysis(null);
+    setAiPattern(null);
     setShapeProfile(DEFAULT_SHAPE);
     setShapeTouched(false);
   }
@@ -857,6 +949,7 @@ export default function CreateFromImages() {
       return current.filter((_, imageIndex) => imageIndex !== index);
     });
     setAnalysis(null);
+    setAiPattern(null);
     setShapeProfile(DEFAULT_SHAPE);
     setShapeTouched(false);
   }
@@ -864,25 +957,75 @@ export default function CreateFromImages() {
   function setImageRole(index: number, role: ViewRole) {
     setImages((current) => current.map((image, imageIndex) => imageIndex === index ? { ...image, role } : image));
     setAnalysis(null);
+    setAiPattern(null);
     setShapeTouched(false);
+  }
+
+  async function requestAiReconstruction(source: ReferenceImage): Promise<AiPattern> {
+    const endpoint = aiEndpoint.trim().replace(/\/+$/, "");
+    if (!endpoint) throw new Error(t.aiServerMissing);
+    const imageResponse = await fetch(source.url);
+    const imageBlob = await imageResponse.blob();
+    const form = new FormData();
+    form.append("image", imageBlob, source.name);
+    form.append("target_length_cm", String(measurements.garmentLength));
+    const headers: HeadersInit = {};
+    if (aiApiKey) headers["X-PatternShift-Key"] = aiApiKey;
+    const response = await fetch(`${endpoint}/v1/reconstruct`, { method: "POST", headers, body: form });
+    if (!response.ok) {
+      const problem = await response.json().catch(() => ({})) as { detail?: string };
+      throw new Error(problem.detail || `HTTP ${response.status}`);
+    }
+    return await response.json() as AiPattern;
+  }
+
+  async function renderAiPattern(targetLengthCm: number): Promise<AiPattern> {
+    if (!aiPattern) throw new Error(t.aiRenderFailed);
+    const endpoint = aiEndpoint.trim().replace(/\/+$/, "");
+    if (!endpoint) throw new Error(t.aiServerMissing);
+    const headers: HeadersInit = { "Content-Type": "application/json" };
+    if (aiApiKey) headers["X-PatternShift-Key"] = aiApiKey;
+    const response = await fetch(`${endpoint}/v1/render`, {
+      method: "POST",
+      headers,
+      body: JSON.stringify({ specification: aiPattern.specification, target_length_cm: targetLengthCm }),
+    });
+    if (!response.ok) {
+      const problem = await response.json().catch(() => ({})) as { detail?: string };
+      throw new Error(problem.detail || `HTTP ${response.status}`);
+    }
+    const rendered = await response.json() as Pick<AiPattern, "patternSvg" | "panelCount" | "stitchCount" | "widthCm" | "heightCm" | "appliedScale">;
+    return { ...aiPattern, ...rendered, targetLengthCm };
   }
 
   async function analyzeAndContinue() {
     const source = images.find((image) => image.role === "front") ?? images[0];
     if (!source) return;
+    if (engine === "sewformer" && !aiEndpoint.trim()) {
+      setStatus(t.aiServerMissing);
+      return;
+    }
     setAnalyzing(true);
-    setStatus(t.analyzing);
+    setStatus(engine === "sewformer" ? t.aiAnalyzing : t.analyzing);
     try {
-      const result = await analyzeSilhouette(source.url, source.name);
-      setAnalysis(result);
-      setShapeProfile(result.ratios);
+      const localPromise = analyzeSilhouette(source.url, source.name);
+      const aiPromise = engine === "sewformer" ? requestAiReconstruction(source) : Promise.resolve(null);
+      const [localResult, aiResult] = await Promise.allSettled([localPromise, aiPromise]);
+      if (localResult.status === "fulfilled") {
+        setAnalysis(localResult.value);
+        setShapeProfile(localResult.value.ratios);
+      } else {
+        setAnalysis(null);
+        setShapeProfile(DEFAULT_SHAPE);
+      }
+      if (aiResult.status === "fulfilled") {
+        setAiPattern(aiResult.value);
+        setStatus(aiResult.value ? t.aiSuccess : localResult.status === "fulfilled" ? "" : t.analysisFailed);
+      } else {
+        setAiPattern(null);
+        setStatus(`${t.aiFailed} ${aiResult.reason instanceof Error ? aiResult.reason.message : ""}`.trim());
+      }
       setShapeTouched(false);
-      setStatus("");
-    } catch {
-      setAnalysis(null);
-      setShapeProfile(DEFAULT_SHAPE);
-      setShapeTouched(false);
-      setStatus(t.analysisFailed);
     } finally {
       setAnalyzing(false);
       setStep(1);
@@ -909,11 +1052,26 @@ export default function CreateFromImages() {
     setMeasurements((current) => ({ ...current, [key]: number }));
   }
 
-  function generateDraft() {
-    const svg = generatePatternSvg(garment, silhouette, sleeve, neckline, closure, measurements, ease, shapeProfile, seamAllowance, dartMode, t);
-    setGeneratedSvg(svg);
-    setStep(3);
-    window.scrollTo({ top: 0, behavior: "smooth" });
+  async function generateDraft() {
+    setGenerating(true);
+    try {
+      if (engine === "sewformer" && aiPattern) {
+        const rendered = aiPattern.targetLengthCm === measurements.garmentLength
+          ? aiPattern
+          : await renderAiPattern(measurements.garmentLength);
+        setAiPattern(rendered);
+        setGeneratedSvg(rendered.patternSvg);
+      } else {
+        setGeneratedSvg(generatePatternSvg(garment, silhouette, sleeve, neckline, closure, measurements, ease, shapeProfile, seamAllowance, dartMode, t));
+      }
+      setStatus("");
+      setStep(3);
+      window.scrollTo({ top: 0, behavior: "smooth" });
+    } catch (error) {
+      setStatus(`${t.aiRenderFailed} ${error instanceof Error ? error.message : ""}`.trim());
+    } finally {
+      setGenerating(false);
+    }
   }
 
   function downloadSvg() {
@@ -921,7 +1079,7 @@ export default function CreateFromImages() {
     const url = URL.createObjectURL(new Blob([generatedSvg], { type: "image/svg+xml" }));
     const anchor = document.createElement("a");
     anchor.href = url;
-    anchor.download = `PatternShift-${garment}-${size}-preliminary.svg`;
+    anchor.download = `PatternShift-${engine === "sewformer" && aiPattern ? "SewFormer" : garment}-${size}.svg`;
     anchor.click();
     URL.revokeObjectURL(url);
   }
@@ -929,7 +1087,7 @@ export default function CreateFromImages() {
   function openInResizeStudio() {
     if (!generatedSvg) return;
     window.sessionStorage.setItem("patternshift-generated-pattern", generatedSvg);
-    window.sessionStorage.setItem("patternshift-generated-name", `PatternShift-${garment}-${size}-preliminary.svg`);
+    window.sessionStorage.setItem("patternshift-generated-name", `PatternShift-${engine === "sewformer" && aiPattern ? "SewFormer" : garment}-${size}.svg`);
     window.location.href = `${publicBasePath}/resize/`;
   }
 
@@ -967,33 +1125,45 @@ export default function CreateFromImages() {
             <input ref={fileInputRef} type="file" accept=".png,.jpg,.jpeg,.webp" multiple className="sr-only" onChange={handleImages} />
             {status && <p role="status" className="mt-3 text-sm text-[#a23c32]">{status}</p>}
             {images.length > 0 && <div className="mt-4 grid grid-cols-2 gap-3 sm:grid-cols-4">{images.map((image, index) => <figure key={`${image.name}-${index}`} className="relative overflow-hidden rounded-xl border border-[#d7cec3] bg-white"><img src={image.url} alt={image.name} className="aspect-square w-full object-cover" /><figcaption className="truncate px-2 pt-2 text-[10px] text-[#6f6570]">{image.name}</figcaption><div className="p-2"><Select value={image.role} onValueChange={(value) => setImageRole(index, value as ViewRole)}><SelectTrigger aria-label={t.viewRole} className="h-8 w-full bg-white text-xs"><SelectValue /></SelectTrigger><SelectContent><SelectItem value="front">{t.frontView}</SelectItem><SelectItem value="back">{t.backView}</SelectItem><SelectItem value="side">{t.sideView}</SelectItem><SelectItem value="detail">{t.detailView}</SelectItem></SelectContent></Select></div><button type="button" aria-label={t.remove} onClick={() => removeImage(index)} className="absolute right-2 top-2 grid size-7 place-items-center rounded-full bg-[#2c2430]/80 text-white"><X className="size-3.5" /></button></figure>)}</div>}
+            <div className="mt-7 rounded-2xl border border-[#d8cbdc] bg-[#f7f1f8] p-4 sm:p-5">
+              <div className="flex items-start gap-3"><span className="grid size-9 shrink-0 place-items-center rounded-xl bg-[#e7daeb] text-[#62406d]"><BrainCircuit className="size-5" /></span><div><p className="font-serif text-xl font-semibold">{t.engineTitle}</p><p className="mt-1 text-xs leading-5 text-[#6f6570]">{t.engineDesc}</p></div></div>
+              <div className="mt-4 grid gap-3 sm:grid-cols-2">
+                <Choice selected={engine === "local"} title={t.localEngine} description={t.localEngineDesc} onClick={() => { setEngine("local"); setAiPattern(null); setStatus(""); }} />
+                <Choice selected={engine === "sewformer"} title={t.aiEngine} description={t.aiEngineDesc} onClick={() => { setEngine("sewformer"); setAiPattern(null); setStatus(""); }} />
+              </div>
+              {engine === "sewformer" && <div className="mt-4 grid gap-4 sm:grid-cols-2"><div><Label className="mb-1.5 text-xs text-[#6c626d]">{t.aiEndpoint}</Label><Input type="url" value={aiEndpoint} placeholder={t.aiEndpointPlaceholder} onChange={(event) => setAiEndpoint(event.target.value)} /></div><div><Label className="mb-1.5 flex items-center gap-1.5 text-xs text-[#6c626d]"><KeyRound className="size-3.5" />{t.aiApiKey}</Label><Input type="password" value={aiApiKey} autoComplete="off" onChange={(event) => setAiApiKey(event.target.value)} /><p className="mt-1.5 text-[10px] leading-4 text-[#7a6f7b]">{t.aiApiKeyHelp}</p></div></div>}
+            </div>
             <div className="mt-7"><Label className="mb-3 text-sm font-semibold">{t.coverageTitle}</Label><div className="grid gap-3 sm:grid-cols-3">{(["front", "frontBack", "multi"] as Coverage[]).map((value) => { const title = value === "front" ? t.coverageFront : value === "frontBack" ? t.coverageBack : t.coverageMulti; const desc = value === "front" ? t.coverageFrontDesc : value === "frontBack" ? t.coverageBackDesc : t.coverageMultiDesc; return <Choice key={value} selected={coverage === value} title={title} description={desc} onClick={() => setCoverage(value)} />; })}</div></div>
-            <div className="mt-7 flex justify-end"><Button size="lg" className="rounded-xl bg-[#5b3b68] hover:bg-[#493055]" disabled={!images.length || analyzing} onClick={() => void analyzeAndContinue()}>{analyzing ? <ScanLine className="animate-pulse" /> : <Focus />}{analyzing ? t.analyzing : t.nextDesign}<ArrowRight /></Button></div>
+            <div className="mt-7 flex justify-end"><Button size="lg" className="rounded-xl bg-[#5b3b68] hover:bg-[#493055]" disabled={!images.length || analyzing} onClick={() => void analyzeAndContinue()}>{analyzing ? <ScanLine className="animate-pulse" /> : <Focus />}{analyzing ? (engine === "sewformer" ? t.aiAnalyzing : t.analyzing) : t.nextDesign}<ArrowRight /></Button></div>
           </div>}
 
           {step === 1 && <div className="p-5 sm:p-7"><StepTitle icon={<Scissors />} title={t.designTitle} description={t.designDesc} />
+            {status && <p role="status" className={`mt-4 rounded-xl border p-3 text-sm ${status === t.aiSuccess ? "border-[#c8d8cd] bg-[#f3f8f4] text-[#315d49]" : "border-[#dfcda9] bg-[#fff8e8] text-[#8a3d34]"}`}>{status}</p>}
+            {aiPattern && <div className="mt-6 rounded-2xl border border-[#bfcfca] bg-[#f1f8f4] p-4 sm:p-5"><div className="flex flex-wrap items-start justify-between gap-3"><div><p className="flex items-center gap-2 font-serif text-xl font-semibold text-[#315d49]"><BrainCircuit className="size-5" />{t.aiPatternTitle}</p><p className="mt-1 max-w-3xl text-xs leading-5 text-[#5e7167]">{t.aiPatternDesc}</p></div><span className="rounded-full bg-[#d8ecdf] px-3 py-1.5 text-xs font-bold text-[#315d49]">{aiPattern.model} · {aiPattern.modelVersion}</span></div><div className="mt-4 grid gap-4 lg:grid-cols-[minmax(0,1fr)_220px]"><figure className="overflow-hidden rounded-xl border border-[#c8d8cd] bg-white p-3"><img src={`data:image/svg+xml;charset=utf-8,${encodeURIComponent(aiPattern.patternSvg)}`} alt={t.aiPatternTitle} className="max-h-[460px] w-full object-contain" /></figure><dl className="grid grid-cols-2 gap-3 lg:grid-cols-1"><AiMetric label={t.aiPanels} value={String(aiPattern.panelCount)} /><AiMetric label={t.aiStitches} value={String(aiPattern.stitchCount)} /><AiMetric label={t.aiCanvas} value={`${aiPattern.widthCm} × ${aiPattern.heightCm} cm`} /></dl></div>{aiPattern.warnings.length > 0 && <ul className="mt-4 space-y-1.5 text-[11px] leading-5 text-[#6d5a3d]">{aiPattern.warnings.map((warning) => <li key={warning} className="flex gap-2"><CircleAlert className="mt-0.5 size-3.5 shrink-0" />{warning}</li>)}</ul>}</div>}
             <div className="mt-6 rounded-2xl border border-[#d8cbdc] bg-[#f7f1f8] p-4 sm:p-5"><div className="flex flex-wrap items-start justify-between gap-3"><div><p className="flex items-center gap-2 font-serif text-xl font-semibold"><ScanLine className="size-5 text-[#65436e]" />{t.analysisTitle}</p><p className="mt-1 max-w-3xl text-xs leading-5 text-[#6f6570]">{t.analysisDesc}</p></div>{analysis && <span className="rounded-full bg-[#e1efe4] px-3 py-1.5 text-xs font-bold text-[#386049]">{analysis.score}%</span>}</div>{analysis ? <div className="mt-4 grid gap-4 md:grid-cols-[220px_1fr]"><figure className="overflow-hidden rounded-xl border border-[#cfc2d2] bg-white"><img src={analysis.previewUrl} alt={t.detectedContour} className="aspect-[3/4] w-full object-contain" /><figcaption className="flex items-center justify-between gap-2 px-3 py-2 text-[10px] text-[#6f6570]"><span className="truncate">{analysis.sourceName}</span><span>{t.pixelCoverage}: {Math.round(analysis.foregroundCoverage * 100)}%</span></figcaption></figure><div><p className="font-semibold">{t.correctionTitle}</p><p className="mt-1 text-xs leading-5 text-[#746a75]">{t.correctionDesc}</p><div className="mt-4 space-y-4"><ShapeControl label={t.shoulderShape} value={shapeProfile.shoulder} onChange={(value) => updateShape("shoulder", value)} left={t.narrower} middle={t.neutral} right={t.wider} /><ShapeControl label={t.waistShape} value={shapeProfile.waist} onChange={(value) => updateShape("waist", value)} left={t.narrower} middle={t.neutral} right={t.wider} /><ShapeControl label={t.hipShape} value={shapeProfile.hip} onChange={(value) => updateShape("hip", value)} left={t.narrower} middle={t.neutral} right={t.wider} /><ShapeControl label={t.hemShape} value={shapeProfile.hem} min={65} max={155} onChange={(value) => updateShape("hem", value)} left={t.narrower} middle={t.neutral} right={t.wider} /><ShapeControl label={t.lengthShape} value={shapeProfile.length} min={85} max={115} onChange={(value) => updateShape("length", value)} left={t.narrower} middle={t.neutral} right={t.wider} /></div><Button variant="ghost" size="sm" className="mt-3 text-[#65436e]" onClick={resetShape}><RefreshCcw />{t.resetDetection}</Button></div></div> : <div className="mt-4 rounded-xl border border-[#dfcda9] bg-[#fff8e8] p-4 text-sm text-[#6b4e27]"><CircleAlert className="mr-2 inline size-4" />{t.analysisFailed}<div className="mt-4 space-y-4"><ShapeControl label={t.shoulderShape} value={shapeProfile.shoulder} onChange={(value) => updateShape("shoulder", value)} left={t.narrower} middle={t.neutral} right={t.wider} /><ShapeControl label={t.waistShape} value={shapeProfile.waist} onChange={(value) => updateShape("waist", value)} left={t.narrower} middle={t.neutral} right={t.wider} /><ShapeControl label={t.hipShape} value={shapeProfile.hip} onChange={(value) => updateShape("hip", value)} left={t.narrower} middle={t.neutral} right={t.wider} /><ShapeControl label={t.hemShape} value={shapeProfile.hem} min={65} max={155} onChange={(value) => updateShape("hem", value)} left={t.narrower} middle={t.neutral} right={t.wider} /><ShapeControl label={t.lengthShape} value={shapeProfile.length} min={85} max={115} onChange={(value) => updateShape("length", value)} left={t.narrower} middle={t.neutral} right={t.wider} /></div></div>}</div>
             <div className="mt-6"><Label className="mb-3 text-sm font-semibold">{t.garmentType}</Label><div className="grid grid-cols-2 gap-3 sm:grid-cols-4">{(["dress", "top", "skirt", "trousers"] as Garment[]).map((value) => <Choice key={value} selected={garment === value} title={t[value]} onClick={() => setGarment(value)} />)}</div></div>
             <div className="mt-6"><Label className="mb-3 text-sm font-semibold">{t.silhouette}</Label><div className="grid grid-cols-3 gap-3">{(["fitted", "straight", "aline"] as Silhouette[]).map((value) => <Choice key={value} selected={silhouette === value} title={t[value]} onClick={() => setSilhouette(value)} />)}</div></div>
             {(garment === "dress" || garment === "top") && <div className="mt-6"><Label className="mb-3 text-sm font-semibold">{t.sleeves}</Label><div className="grid grid-cols-3 gap-3">{(["none", "short", "long"] as Sleeve[]).map((value) => <Choice key={value} selected={sleeve === value} title={t[value]} onClick={() => setSleeve(value)} />)}</div></div>}
             <div className="mt-6 grid gap-4 sm:grid-cols-2"><SelectField label={t.neckline} value={neckline} onChange={setNeckline} options={[["round", t.round], ["v", t.vneck], ["square", t.square]]} /><SelectField label={t.closure} value={closure} onChange={setClosure} options={[["none", t.noClosure], ["back", t.backClosure], ["front", t.frontClosure], ["side", t.sideClosure]]} /></div>
-            <div className="mt-7 flex flex-wrap justify-between gap-3"><Button variant="outline" className="rounded-xl" onClick={() => setStep(0)}><ArrowLeft />{t.stepReference}</Button><Button size="lg" className="rounded-xl bg-[#5b3b68] hover:bg-[#493055]" onClick={() => setStep(2)}>{t.nextMeasures}<ArrowRight /></Button></div>
+            <div className="mt-7 flex flex-wrap justify-between gap-3"><Button variant="outline" className="rounded-xl" onClick={() => setStep(0)}><ArrowLeft />{t.stepReference}</Button><Button size="lg" className="rounded-xl bg-[#5b3b68] hover:bg-[#493055]" onClick={() => { setStatus(""); setStep(2); }}>{t.nextMeasures}<ArrowRight /></Button></div>
           </div>}
 
           {step === 2 && <div className="p-5 sm:p-7"><StepTitle icon={<Ruler />} title={t.measuresTitle} description={t.measuresDesc} />
             <div className="mt-6 grid gap-4 rounded-2xl border border-[#ded4c9] bg-[#faf7f1] p-4 sm:grid-cols-[1fr_1fr_auto] sm:items-end"><SelectField label={t.profile} value={profile} onChange={(value) => setProfile(value as Profile)} options={[["women", t.women], ["men", t.men]]} /><SelectField label={t.targetSize} value={size} onChange={(value) => setSize(value as Size)} options={(["XS", "S", "M", "L", "XL"] as Size[]).map((value) => [value, value])} /><Button variant="outline" className="rounded-xl border-[#bfaec4] bg-white" onClick={applyPreset}>{t.applyPreset}</Button></div>
             <div className="mt-6 grid gap-4 sm:grid-cols-2 xl:grid-cols-3">{(["bust", "waist", "hips", "shoulder", "backLength", "garmentLength"] as (keyof Measurements)[]).map((key) => <div key={key}><div className="mb-1.5 flex items-center justify-between"><Label className="text-xs text-[#6c626d]">{t[key]}</Label><span className="text-[10px] uppercase text-[#958996]">cm</span></div><Input type="number" min={1} step={0.5} value={measurements[key]} onChange={(event) => setMeasurement(key, event.target.value)} /></div>)}</div>
             <div className="mt-5 rounded-2xl border border-[#ded4c9] bg-[#faf7f1] p-4"><div className="flex items-end gap-4"><div className="flex-1"><div className="mb-1.5 flex items-center justify-between"><Label className="text-xs text-[#6c626d]">{t.ease}</Label><span className="text-[10px] uppercase text-[#958996]">cm</span></div><Input type="number" min={-2} max={20} step={1} value={ease} onChange={(event) => setEase(Number(event.target.value))} /></div><p className="max-w-sm pb-2 text-xs leading-5 text-[#776d78]">{t.easeHelp}</p></div></div>
-            <div className="mt-5 rounded-2xl border border-[#d8cbdc] bg-[#f7f1f8] p-4"><p className="font-serif text-xl font-semibold">{t.constructionTitle}</p><div className="mt-4 grid gap-4 sm:grid-cols-2"><div><div className="mb-1.5 flex items-center justify-between"><Label className="text-xs text-[#6c626d]">{t.seamAllowanceLabel}</Label><span className="text-[10px] uppercase text-[#958996]">cm</span></div><Input type="number" min={0} max={3} step={0.1} value={seamAllowance} onChange={(event) => setSeamAllowance(clamp(Number(event.target.value), 0, 3))} /></div><SelectField label={t.dartMode} value={dartMode} onChange={(value) => setDartMode(value as DartMode)} options={[["none", t.dartNone], ["waist", t.dartWaist], ["bustWaist", t.dartBustWaist]]} /></div></div>
+            {engine === "sewformer" && aiPattern ? <div className="mt-5 flex gap-3 rounded-2xl border border-[#dfcda9] bg-[#fff8e8] p-4 text-sm leading-6 text-[#6b4e27]"><CircleAlert className="mt-0.5 size-5 shrink-0" /><div><p className="font-serif text-lg font-semibold">{t.constructionTitle}</p><p className="mt-1">{t.aiAllowanceDetail}</p></div></div> : <div className="mt-5 rounded-2xl border border-[#d8cbdc] bg-[#f7f1f8] p-4"><p className="font-serif text-xl font-semibold">{t.constructionTitle}</p><div className="mt-4 grid gap-4 sm:grid-cols-2"><div><div className="mb-1.5 flex items-center justify-between"><Label className="text-xs text-[#6c626d]">{t.seamAllowanceLabel}</Label><span className="text-[10px] uppercase text-[#958996]">cm</span></div><Input type="number" min={0} max={3} step={0.1} value={seamAllowance} onChange={(event) => setSeamAllowance(clamp(Number(event.target.value), 0, 3))} /></div><SelectField label={t.dartMode} value={dartMode} onChange={(value) => setDartMode(value as DartMode)} options={[["none", t.dartNone], ["waist", t.dartWaist], ["bustWaist", t.dartBustWaist]]} /></div></div>}
             <label className="mt-6 flex cursor-pointer items-start gap-3 rounded-xl border border-[#d8cbdc] bg-[#f5eff6] p-4 text-sm leading-6 text-[#5f5063]"><Checkbox checked={confirmed} onCheckedChange={(value) => setConfirmed(Boolean(value))} className="mt-1 border-[#8e7c92] data-[state=checked]:bg-[#5b3b68]" />{t.confirm}</label>
-            <div className="mt-7 flex flex-wrap justify-between gap-3"><Button variant="outline" className="rounded-xl" onClick={() => setStep(1)}><ArrowLeft />{t.stepDesign}</Button><Button size="lg" className="rounded-xl bg-[#5b3b68] hover:bg-[#493055]" disabled={!confirmed} onClick={generateDraft}><WandSparkles />{t.generate}</Button></div>
+            {status && <p role="status" className="mt-3 text-sm text-[#a23c32]">{status}</p>}
+            <div className="mt-7 flex flex-wrap justify-between gap-3"><Button variant="outline" className="rounded-xl" onClick={() => setStep(1)}><ArrowLeft />{t.stepDesign}</Button><Button size="lg" className="rounded-xl bg-[#5b3b68] hover:bg-[#493055]" disabled={!confirmed || generating} onClick={() => void generateDraft()}>{generating ? <ScanLine className="animate-pulse" /> : <WandSparkles />}{generating ? t.aiRendering : t.generate}</Button></div>
           </div>}
 
-          {step === 3 && <div className="p-5 sm:p-7"><StepTitle icon={<Sparkles />} title={t.resultTitle} description={t.resultDesc} />
+          {step === 3 && <div className="p-5 sm:p-7"><StepTitle icon={<Sparkles />} title={t.resultTitle} description={engine === "sewformer" && aiPattern ? t.aiResultDesc : t.resultDesc} />
+            {engine === "sewformer" && aiPattern && <div className="mt-5 grid gap-3 rounded-2xl border border-[#c8d8cd] bg-[#f3f8f4] p-4 sm:grid-cols-3"><AiMetric label={t.aiPanels} value={String(aiPattern.panelCount)} /><AiMetric label={t.aiStitches} value={String(aiPattern.stitchCount)} /><AiMetric label={t.aiCanvas} value={`${aiPattern.widthCm} × ${aiPattern.heightCm} cm`} /></div>}
             <div className="mt-6 overflow-hidden rounded-2xl border border-[#d7cec3] bg-[#f8f6f1] p-4"><img src={previewUrl} alt={t.resultTitle} className="max-h-[720px] w-full object-contain" /></div>
             <div className="mt-5 rounded-2xl border border-[#d8cec3] bg-white p-4 sm:p-5"><div className="flex flex-wrap items-end justify-between gap-3"><div><h3 className="font-serif text-xl font-semibold">{t.checksTitle}</h3><p className="mt-1 max-w-3xl text-xs leading-5 text-[#736974]">{t.checksDesc}</p></div><span className="rounded-full bg-[#eee6f0] px-3 py-1.5 text-xs font-bold text-[#62406d]">{passedChecks}/{patternChecks.length}</span></div><div className="mt-4 grid gap-3 sm:grid-cols-2">{patternChecks.map((check) => <div key={check.label} className={`rounded-xl border p-3 ${check.passed ? "border-[#c9d8cd] bg-[#f3f8f4]" : "border-[#dfcda9] bg-[#fff8e8]"}`}><div className="flex items-center justify-between gap-3"><strong className="text-sm">{check.label}</strong><span className={`rounded-full px-2 py-1 text-[10px] font-bold uppercase tracking-wide ${check.passed ? "bg-[#dceade] text-[#356249]" : "bg-[#f3e3bd] text-[#845c22]"}`}>{check.passed ? t.passed : t.review}</span></div><p className="mt-1.5 text-[11px] leading-5 text-[#6c626d]">{check.detail}</p></div>)}</div><Button variant="ghost" size="sm" className="mt-3 text-[#65436e]" onClick={() => setStep(2)}><ArrowLeft />{t.editSettings}</Button></div>
             <div className="mt-5 grid gap-3 sm:grid-cols-2"><Button size="lg" variant="outline" className="h-12 rounded-xl border-[#bcaac1]" onClick={downloadSvg}><Download />{t.download}</Button><Button size="lg" className="h-12 rounded-xl bg-[#5b3b68] hover:bg-[#493055]" onClick={openInResizeStudio}>{t.openResize}<ArrowRight /></Button></div>
-            <Button variant="ghost" className="mt-3 text-[#684c6e]" onClick={() => { setGeneratedSvg(""); setStep(0); }}>{t.startOver}</Button>
+            <Button variant="ghost" className="mt-3 text-[#684c6e]" onClick={() => { setGeneratedSvg(""); setAiPattern(null); setAnalysis(null); setStatus(""); setStep(0); }}>{t.startOver}</Button>
           </div>}
         </section>
 
@@ -1017,6 +1187,10 @@ function Choice({ selected, title, description, onClick }: { selected: boolean; 
 
 function SelectField({ label, value, onChange, options }: { label: string; value: string; onChange: (value: string) => void; options: string[][] }) {
   return <div className="min-w-0"><Label className="mb-1.5 text-xs text-[#6c626d]">{label}</Label><Select value={value} onValueChange={onChange}><SelectTrigger className="w-full border-[#d7cec3] bg-white"><SelectValue /></SelectTrigger><SelectContent>{options.map(([optionValue, optionLabel]) => <SelectItem key={optionValue} value={optionValue}>{optionLabel}</SelectItem>)}</SelectContent></Select></div>;
+}
+
+function AiMetric({ label, value }: { label: string; value: string }) {
+  return <div className="rounded-xl border border-[#c8d8cd] bg-white/85 p-3"><p className="text-[10px] font-bold uppercase tracking-[.12em] text-[#607068]">{label}</p><p className="mt-1 font-serif text-xl font-semibold text-[#315d49]">{value}</p></div>;
 }
 
 function ShapeControl({ label, value, min = 68, max = 138, onChange, left, middle, right }: { label: string; value: number; min?: number; max?: number; onChange: (value: number) => void; left: string; middle: string; right: string }) {

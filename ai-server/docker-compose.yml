@@ -1,0 +1,21 @@
+services:
+  patternshift-ai:
+    build: .
+    ports:
+      - "8000:8000"
+    environment:
+      SEWFORMER_ROOT: /opt/sewformer
+      SEWFORMER_CHECKPOINT: /opt/models/Detr2d-V6-final-dif-ce-focal-schd-agp_checkpoint_37.pth
+      SEWFORMER_TIMEOUT_SECONDS: 300
+      PATTERNSHIFT_ALLOWED_ORIGINS: ${PATTERNSHIFT_ALLOWED_ORIGINS:-https://yevheniimalin.github.io,https://patternshift-studio.malevge1985.chatgpt.site,http://localhost:3000}
+      PATTERNSHIFT_API_KEY: ${PATTERNSHIFT_API_KEY:-}
+    volumes:
+      - ${SEWFORMER_SOURCE:?Set SEWFORMER_SOURCE to the official repository checkout}:/opt/sewformer:ro
+      - ${SEWFORMER_CHECKPOINT:?Set SEWFORMER_CHECKPOINT to the official checkpoint file}:/opt/models/Detr2d-V6-final-dif-ce-focal-schd-agp_checkpoint_37.pth:ro
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
