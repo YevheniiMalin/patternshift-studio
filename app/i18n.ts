@@ -2,6 +2,7 @@ export type Language = "en" | "ru" | "fi";
 
 const en = {
   language: "Language",
+  backToModes: "Choose another mode",
   digitalStudio: "Digital grading studio",
   privacy: "Your pattern stays in this browser",
   eyebrow: "Browser-based pattern resizing",
@@ -182,6 +183,7 @@ export const translations: Record<Language, Record<TranslationKey, string>> = {
   en,
   ru: {
     language: "Язык",
+    backToModes: "Выбрать другой режим",
     digitalStudio: "Цифровая студия градации",
     privacy: "Выкройка остаётся в вашем браузере",
     eyebrow: "Изменение размера выкроек в браузере",
@@ -357,6 +359,7 @@ export const translations: Record<Language, Record<TranslationKey, string>> = {
   },
   fi: {
     language: "Kieli",
+    backToModes: "Valitse toinen tila",
     digitalStudio: "Digitaalinen sarjontastudio",
     privacy: "Kaava pysyy tässä selaimessa",
     eyebrow: "Kaavan koon muuttaminen selaimessa",

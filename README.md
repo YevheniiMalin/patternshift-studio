@@ -1,9 +1,10 @@
 # PatternShift Studio
 
-PatternShift Studio is a privacy-first browser application for creating proportional sewing-pattern drafts. A user uploads a pattern, selects the source and target size, then refines the result by garment type, sizing system, stature, figure profile, fit, fabric stretch, and designer ease.
+PatternShift Studio is a privacy-first browser application with two guided workflows: resizing an existing sewing pattern and creating a transparent preliminary base pattern from reference images, garment details and measurements.
 
 ## Current capabilities
 
+- separate mode-selection page for existing patterns and image-based drafts
 - PDF, SVG, PNG, JPG and WebP pattern upload
 - single-page and tiled multi-page PDF import with page-range and grid controls
 - women’s and men’s XXS–XXL reference charts
@@ -18,10 +19,14 @@ PatternShift Studio is a privacy-first browser application for creating proporti
 - first-visit walkthrough, guided three-step setup and contextual explanations
 - one-click demonstration pattern for learning the workflow without a personal file
 - fully local browser processing — uploaded patterns are not sent to a server
+- image-reference wizard with front, back and side coverage controls
+- garment, silhouette, sleeve, neckline and closure specification
+- measurement-driven preliminary SVG generation with confidence and assumption checks
+- direct handoff of a generated SVG to the resizing studio
 
 ## Accuracy boundary
 
-The current release creates a proportional draft. It does not yet identify and move professional grading anchor points independently. Before cutting final fabric, verify matching seams, grainline, darts, armholes, sleeve caps and fit with a test garment.
+The resize workflow creates a proportional draft and does not yet identify and move professional grading anchor points independently. The image workflow uses uploaded pictures as visual references but does not yet perform full AI reconstruction. Before cutting final fabric, verify matching seams, grainline, darts, armholes, sleeve caps, hidden construction and fit with a test garment.
 
 ## Guided setup
 
@@ -38,6 +43,8 @@ The GitHub Pages workflow builds a static Next.js export automatically from the 
 
 ## Roadmap
 
+- AI-assisted panel recognition from multiple garment views
+- editable assumptions and construction anchors
 - vector anchor-point editor for true multi-point grading
 - DXF import
 - custom brand and personal measurement charts
